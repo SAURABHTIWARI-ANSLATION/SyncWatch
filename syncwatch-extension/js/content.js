@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────
-// SyncWatch — Content Script  (FIXED v1.1)
+// SyncWatch — Content Script  (FIXED v1.2)
 // ─────────────────────────────────────────────────────────────────
 'use strict';
 
@@ -16,7 +16,7 @@ let overlayFrame = null;
 let scanInterval = null;
 let heartbeatInterval = null;
 
-// FIX: Track all known peer userIds in the room so screen share can reach them
+// FIX: Track all known peer userIds for screen share
 let knownPeers = new Set();
 
 // WebRTC state (host only — screen share)
@@ -75,6 +75,7 @@ function attachToVideo(v, score) {
   video.addEventListener('pause', handlePause);
   video.addEventListener('seeked', handleSeeked);
   video.addEventListener('durationchange', handleDuration);
+  // Overlay inject karo agar abhi tak nahi hui
   injectOverlay();
 }
 
@@ -131,17 +132,21 @@ function applySeek(time) {
 // ── Controls overlay (iframe) ─────────────────────────────────────
 
 function injectOverlay() {
-  if (overlayFrame) return;
+  if (overlayFrame) return; // Already injected — skip
+
   const host = document.createElement('div');
   host.id = 'sw-overlay-host';
   host.style.cssText = 'position:fixed;bottom:0;left:0;width:100%;height:56px;z-index:2147483647;pointer-events:none;';
   document.body.appendChild(host);
+
   const shadow = host.attachShadow({ mode: 'open' });
   overlayFrame = document.createElement('iframe');
   overlayFrame.src = chrome.runtime.getURL('controls.html');
   overlayFrame.style.cssText = 'width:100%;height:100%;border:none;pointer-events:auto;background:transparent;';
   shadow.appendChild(overlayFrame);
+
   window.addEventListener('message', handleOverlayMessage);
+  console.log('[SW Content] Overlay injected');
 }
 
 function removeOverlay() {
@@ -187,7 +192,7 @@ function handleOverlayMessage(e) {
       chrome.runtime.sendMessage({ action: 'syncRequest' });
       break;
     case 'leave':
-      // FIX: was using chrome.runtime.id (extension ID) instead of letting background use sender.tab.id
+      // FIX: was using chrome.runtime.id (extension ID) — background uses sender.tab.id now
       chrome.runtime.sendMessage({ action: 'leaveRoom' });
       break;
   }
@@ -203,10 +208,22 @@ chrome.runtime.onMessage.addListener((msg) => {
       inRoom = true;
       userId = msg.userId;
       myRoomId = msg.roomId;
-      // FIX: store all known peers so screen share can send offers to everyone
       knownPeers.clear();
       (msg.otherUsers || []).forEach(id => knownPeers.add(id));
-      postToOverlay({ type: 'joined', roomId: msg.roomId, userId: msg.userId, memberCount: msg.memberCount });
+
+      // ─────────────────────────────────────────────────────────────
+      // MAIN FIX: Overlay TURANT inject karo room join hote hi.
+      // Pehle sirf video detect hone par inject hoti thi — isliye
+      // agar page pe video nahi play ho rahi toh Share Screen button
+      // kabhi nahi dikhta tha.
+      // ─────────────────────────────────────────────────────────────
+      injectOverlay();
+
+      // Iframe load hone ka thoda wait karo, phir joined state bhejo
+      setTimeout(() => {
+        postToOverlay({ type: 'joined', roomId: msg.roomId, userId: msg.userId, memberCount: msg.memberCount });
+      }, 800);
+
       if (msg.state && (msg.state.playing || msg.state.time > 2)) {
         setTimeout(() => applySync(msg.state), 500);
       }
@@ -234,11 +251,11 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'user_joined':
-      // FIX: track new user; if screen share is active, immediately offer them a stream
       knownPeers.add(msg.userId);
       postToOverlay({ type: 'user_joined', userId: msg.userId, memberCount: msg.memberCount });
+      // Agar screen share chal raha hai toh naye viewer ko offer bhejo
       if (localStream) {
-        console.log('[SW Content] New viewer joined during screen share, creating offer for:', msg.userId);
+        console.log('[SW Content] New viewer during share, offering:', msg.userId);
         createPeerForViewer(msg.userId);
       }
       break;
@@ -291,11 +308,8 @@ async function startScreenShare() {
     localStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
     localStream.getTracks().forEach(track => { track.onended = () => stopScreenShare(); });
     postToOverlay({ type: 'screenShareStarted' });
-
-    // FIX: was calling createOfferToAllPeers() which sent a useless event.
-    // Now we directly iterate knownPeers and send WebRTC offers to each viewer.
+    // Sabhi known viewers ko offer bhejo
     await createOfferToAllPeers();
-
   } catch (e) {
     console.error('[SW Content] Screen share error:', e);
     postToOverlay({ type: 'screenShareError', msg: e.message });
@@ -309,16 +323,14 @@ function stopScreenShare() {
   postToOverlay({ type: 'screenShareStopped' });
 }
 
-// FIX: was sending a useless 'screen_share_started' playback event that the server ignores.
-// Now iterates knownPeers and creates a real WebRTC offer for each viewer.
 async function createOfferToAllPeers() {
   const viewers = [...knownPeers].filter(id => id !== userId);
   if (viewers.length === 0) {
-    console.log('[SW Content] No viewers to offer screen share to yet.');
+    console.log('[SW Content] No viewers yet to send screen share to.');
     return;
   }
   for (const viewerId of viewers) {
-    console.log('[SW Content] Creating WebRTC offer for viewer:', viewerId);
+    console.log('[SW Content] Sending WebRTC offer to:', viewerId);
     await createPeerForViewer(viewerId);
   }
 }
@@ -347,7 +359,7 @@ async function createPeerForViewer(viewerId) {
     await pc.setLocalDescription(offer);
     chrome.runtime.sendMessage({ action: 'signal', targetId: viewerId, signalData: { offer } });
   } catch (e) {
-    console.error('[SW Content] createOffer error for', viewerId, e);
+    console.error('[SW Content] createOffer error for', viewerId, ':', e);
   }
 
   return pc;
@@ -355,21 +367,21 @@ async function createPeerForViewer(viewerId) {
 
 async function handleWebRTCSignal(senderId, signal) {
   if (localStream) {
-    // We are HOST — handle answers/candidates from viewers
+    // HOST — viewers ke answers/candidates handle karo
     let pc = rtcPeers[senderId];
     if (!pc) pc = await createPeerForViewer(senderId);
     if (!pc) return;
 
     if (signal.answer) {
       try { await pc.setRemoteDescription(new RTCSessionDescription(signal.answer)); drainIceQueue(pc); }
-      catch (e) { console.error('[SW] setRemoteDesc(answer) error:', e); }
+      catch (e) { console.error('[SW] setRemoteDesc answer error:', e); }
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
       if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
       else pc._iceQueue.push(ice);
     }
   } else {
-    // We are VIEWER (extension user watching) — handle offer from host
+    // VIEWER — host ke offer/candidates handle karo
     let pc = rtcPeers[senderId];
     if (!pc) {
       pc = new RTCPeerConnection(ICE_SERVERS);
@@ -379,7 +391,6 @@ async function handleWebRTCSignal(senderId, signal) {
       pc.onicecandidate = e => {
         if (e.candidate) chrome.runtime.sendMessage({ action: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
       };
-
       pc.onconnectionstatechange = () => {
         if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
           delete rtcPeers[senderId];
@@ -395,7 +406,7 @@ async function handleWebRTCSignal(senderId, signal) {
         await pc.setLocalDescription(answer);
         chrome.runtime.sendMessage({ action: 'signal', targetId: senderId, signalData: { answer } });
         drainIceQueue(pc);
-      } catch (e) { console.error('[SW] setRemoteDesc(offer) error:', e); }
+      } catch (e) { console.error('[SW] setRemoteDesc offer error:', e); }
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
       if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
@@ -412,8 +423,7 @@ function drainIceQueue(pc) {
 
 // ── Init ──────────────────────────────────────────────────────────
 
-// FIX: was sending tabId: null which made db[null] lookup always fail.
-// background.js now uses sender.tab.id as fallback when tabId is absent.
+// Page refresh ke baad state restore karo
 chrome.runtime.sendMessage({ action: 'getStatus' }, resp => {
   if (resp && resp.room && resp.connected) {
     inRoom = true;
