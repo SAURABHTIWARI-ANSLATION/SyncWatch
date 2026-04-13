@@ -254,6 +254,7 @@ async function leaveRoom() {
 // MESSAGE ROUTER
 // ═══════════════════════════════════════════════════════════
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  console.log("[BG] Message received:", msg.type, msg);
 
   // ── Relay from popup ──
   if (msg.type === 'RELAY_TO_CONTENT') {
@@ -307,10 +308,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // Content script forwards WebRTC signals to server via BG
     case 'CONTENT_SIGNAL':
+      console.log("[BG] Routing signal to server for target:", msg.targetId);
       wsSend({ type: 'signal', targetId: msg.targetId, signalData: msg.signalData });
       return false;
 
     case 'CONTENT_SHARE_ENDED':
+      console.log("[BG] Share ended by content script");
       isSharing = false;
       setStorage({ isSharing: false });
       broadcastTabs({ type: 'BG_SHARE_STOPPED' });

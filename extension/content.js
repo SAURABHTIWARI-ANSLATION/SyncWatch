@@ -263,6 +263,7 @@
   // BACKGROUND → CONTENT MESSAGES
   // ═══════════════════════════════════════════════════════════
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    console.log("[SW Content] Received message:", msg.type, msg);
     switch (msg.type) {
       case 'ping':
         sendResponse({ alive: true });
