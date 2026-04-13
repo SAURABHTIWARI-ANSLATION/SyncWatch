@@ -35,7 +35,7 @@ if (roomId) document.getElementById('inp-room-id').value = roomId;
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('yt-player', {
     height: '100%', width: '100%', videoId: '',
-    playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1 },
+    playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1, origin: window.location.origin },
     events: {
       onReady: () => { playerReady = true; },
       onStateChange: onPlayerStateChange
