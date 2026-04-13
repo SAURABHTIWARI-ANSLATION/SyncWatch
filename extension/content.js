@@ -21,6 +21,12 @@
   let overlayCreated   = false;
   let chatOpen         = true;
 
+  // WebRTC State
+  let rtcPeers         = {};
+  let localStream      = null;
+  let roomUsers        = new Set();
+  const ICE_SERVERS    = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
   // ── Video detection ──────────────────────────────────────
   function findVideo() {
     const vids = Array.from(document.querySelectorAll('video'));
@@ -129,6 +135,7 @@
     switch (msg.type) {
       case 'joined':
         userId = msg.userId;
+        roomUsers = new Set(msg.otherUsers || []);
         applySync(msg.state);
         setStatus('Room: ' + msg.roomId);
         setDot('#4ade80');
@@ -163,11 +170,22 @@
         break;
 
       case 'user_joined':
+        roomUsers.add(msg.userId);
         addChat('System', `${msg.userId} joined · ${msg.memberCount} watching`);
+        if (localStream) createOffer(msg.userId);
         break;
 
       case 'user_left':
+        roomUsers.delete(msg.userId);
+        if (rtcPeers[msg.userId]) {
+          rtcPeers[msg.userId].close();
+          delete rtcPeers[msg.userId];
+        }
         addChat('System', `${msg.userId} left · ${msg.memberCount} watching`);
+        break;
+
+      case 'signal':
+        handleSignal(msg.senderId, msg.signalData);
         break;
 
       case 'error':
@@ -176,6 +194,84 @@
         setDot('#ef4444');
         break;
     }
+  }
+
+  // ── WebRTC Logic ──────────────────────────────────────────
+  async function toggleScreenShare() {
+    if (localStream) {
+      localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+      Object.keys(rtcPeers).forEach(id => {
+        rtcPeers[id].close();
+        delete rtcPeers[id];
+      });
+      addChat('System', 'Screen sharing stopped');
+      return;
+    }
+    try {
+      localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      addChat('System', 'Screen sharing started (Others will see your screen)');
+      
+      // Handle native browser "Stop sharing"
+      localStream.getVideoTracks()[0].onended = () => {
+        if (localStream) toggleScreenShare();
+      };
+
+      // Offer to all existing users
+      roomUsers.forEach(id => createOffer(id));
+    } catch (err) {
+      addChat('Error', 'Screen share denied or failed');
+    }
+  }
+
+  async function createOffer(targetId) {
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    rtcPeers[targetId] = pc;
+    setupPeer(pc, targetId);
+
+    if (localStream) {
+      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    }
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    wsend({ type: 'signal', targetId, signalData: { offer } });
+  }
+
+  async function handleSignal(senderId, signal) {
+    let pc = rtcPeers[senderId];
+    if (!pc) {
+      pc = new RTCPeerConnection(ICE_SERVERS);
+      rtcPeers[senderId] = pc;
+      setupPeer(pc, senderId);
+      if (localStream) {
+        localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+      }
+    }
+
+    if (signal.offer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      wsend({ type: 'signal', targetId: senderId, signalData: { answer } });
+    } else if (signal.answer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
+    } else if (signal.candidate) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)); } catch {}
+    }
+  }
+
+  function setupPeer(pc, targetId) {
+    pc.onicecandidate = e => {
+      if (e.candidate) wsend({ type: 'signal', targetId, signalData: { candidate: e.candidate } });
+    };
+    pc.ontrack = e => {
+      const vid = document.getElementById('_sw_remote_vid');
+      if (vid && e.streams[0]) {
+        vid.style.display = 'block';
+        if (vid.srcObject !== e.streams[0]) vid.srcObject = e.streams[0];
+      }
+    };
   }
 
   // ── Overlay UI ───────────────────────────────────────────
@@ -320,10 +416,12 @@
           <span id="_sw_dot"></span>
           <span id="_sw_brand">SyncWatch</span>
           <span id="_sw_status">Idle</span>
+          <button class="_sw_tbtn" id="_sw_share_btn" title="Share Screen">📺</button>
           <button class="_sw_tbtn" id="_sw_toggle" title="Toggle chat">💬</button>
           <button class="_sw_tbtn" id="_sw_close_btn" title="Hide overlay">✕</button>
         </div>
         <div id="_sw_body">
+          <video id="_sw_remote_vid" autoplay playsinline style="display:none; width:100%; border-bottom: 1px solid rgba(255,255,255,0.07);"></video>
           <div id="_sw_msgs"></div>
           <div id="_sw_inputrow">
             <input id="_sw_input" placeholder="Type a message…" autocomplete="off" maxlength="300" />
@@ -339,6 +437,7 @@
 
     // Wire up buttons
     document.getElementById('_sw_toggle').addEventListener('click', toggleChat);
+    document.getElementById('_sw_share_btn').addEventListener('click', toggleScreenShare);
     document.getElementById('_sw_close_btn').addEventListener('click', () => {
       root.style.display = 'none';
     });

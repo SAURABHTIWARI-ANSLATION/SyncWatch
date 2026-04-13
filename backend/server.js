@@ -70,6 +70,8 @@ function broadcast(roomId, msg, exclude = null) {
 wss.on('connection', (ws) => {
   let roomId = null;
   const userId = uuidv4().slice(0, 6);
+  ws.wsUserId = userId; // attach ID for WebRTC targeting
+
 
   ws.on('message', (raw) => {
     let msg;
@@ -93,11 +95,14 @@ wss.on('connection', (ws) => {
           : 0;
         const syncedTime = room.state.time + elapsed;
 
+        const otherUserIds = [...room.clients].map(c => c.wsUserId).filter(id => id && id !== userId);
+
         send(ws, {
           type: 'joined',
           roomId,
           userId,
           memberCount: room.clients.size,
+          otherUsers: otherUserIds,
           state: { ...room.state, time: syncedTime }
         });
         broadcast(roomId, { type: 'user_joined', userId, memberCount: room.clients.size }, ws);
@@ -158,6 +163,21 @@ wss.on('connection', (ws) => {
       case 'heartbeat':
         send(ws, { type: 'heartbeat_ack' });
         break;
+
+      case 'signal': {
+        if (!roomId || !msg.targetId) return;
+        const room = rooms.get(roomId);
+        if (!room) return;
+        const targetClient = [...room.clients].find(c => c.wsUserId === msg.targetId);
+        if (targetClient && targetClient.readyState === 1) {
+          targetClient.send(JSON.stringify({
+            type: 'signal',
+            senderId: userId,
+            signalData: msg.signalData
+          }));
+        }
+        break;
+      }
     }
   });
 

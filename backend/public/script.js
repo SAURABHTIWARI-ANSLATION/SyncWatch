@@ -6,6 +6,10 @@ let userId = null;
 let isSyncing = false;
 let wsUrl = '';
 
+// WebRTC State
+let rtcPeers = {};
+const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
 // 1. Extract Room ID from URL
 const cleanPath = window.location.pathname.replace(/\/$/, '');
 const pathParts = cleanPath.split('/');
@@ -123,8 +127,16 @@ function handleMessage(msg) {
       break;
 
     case 'user_left':
+      if (rtcPeers[msg.userId]) {
+        rtcPeers[msg.userId].close();
+        delete rtcPeers[msg.userId];
+      }
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       addChatMessage('System', `${msg.userId} left the room`);
+      break;
+
+    case 'signal':
+      handleSignal(msg.senderId, msg.signalData);
       break;
 
     case 'error':
@@ -150,6 +162,38 @@ function applySync(state) {
   }
 
   setTimeout(() => isSyncing = false, 800);
+}
+
+// ── WebRTC ────────────────────────────────────────────────
+async function handleSignal(senderId, signal) {
+  let pc = rtcPeers[senderId];
+  if (!pc) {
+    pc = new RTCPeerConnection(ICE_SERVERS);
+    rtcPeers[senderId] = pc;
+    pc.onicecandidate = e => {
+      if (e.candidate) send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
+    };
+    pc.ontrack = e => {
+      const vid = document.getElementById('remote-stream');
+      const yt = document.getElementById('yt-player');
+      if (vid && e.streams[0]) {
+        yt.style.display = 'none';
+        vid.style.display = 'block';
+        if (vid.srcObject !== e.streams[0]) vid.srcObject = e.streams[0];
+      }
+    };
+  }
+
+  if (signal.offer) {
+    await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    send({ type: 'signal', targetId: senderId, signalData: { answer } });
+  } else if (signal.answer) {
+    await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
+  } else if (signal.candidate) {
+    try { await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)); } catch {}
+  }
 }
 
 // 4. Chat UI
