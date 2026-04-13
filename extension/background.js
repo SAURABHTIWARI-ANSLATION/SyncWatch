@@ -154,6 +154,8 @@ function handleServerMsg(msg) {
 // We get the active tab, verify it's injectable, then pass it.
 // ═══════════════════════════════════════════════════════════
 async function startScreenShare(requestingTabId) {
+  console.log('[BG] Starting screen share, requestingTabId:', requestingTabId);
+  
   // Resolve the target tab — prefer the requesting tab
   let targetTab = null;
 
@@ -180,23 +182,29 @@ async function startScreenShare(requestingTabId) {
   }
 
   return new Promise((resolve, reject) => {
+    console.log('[BG] Calling chooseDesktopMedia for tab:', targetTab.id);
     chrome.desktopCapture.chooseDesktopMedia(
       ['screen', 'window', 'tab'],
       targetTab, // ✅ PASSING FULL TAB OBJECT
       (streamId) => {
+        console.log('[BG] chooseDesktopMedia callback, streamId:', streamId);
         if (!streamId) {
           // User cancelled — reset state cleanly
+          console.log('[BG] User cancelled screen share');
           isSharing = false;
           setStorage({ isSharing: false });
           return reject(new Error('Screen share cancelled or permission denied'));
         }
 
+        console.log('[BG] Stream ID obtained, length:', streamId.length);
         isSharing = true;
         setStorage({ isSharing: true });
 
         // Send streamId to the content script of the requesting tab
         const tabId = requestingTabId || targetTab?.id;
         if (tabId) {
+          console.log('[BG] Sending streamId to content script, tabId:', tabId);
+          console.log('[BG] Target IDs:', [...roomUsers]);
           chrome.tabs.sendMessage(tabId, {
             type: 'BG_START_CAPTURE',
             streamId,

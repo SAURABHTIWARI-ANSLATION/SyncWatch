@@ -51,6 +51,8 @@
 
   let localStream = null;   // captured screen MediaStream
   let rtcPeers = {};     // { userId: RTCPeerConnection }
+  let remoteStream = null;  // received screen stream (for guests)
+  let isHost = false;      // am I the screen share host?
 
   // ═══════════════════════════════════════════════════════════
   // VIDEO DETECTION & SYNC
@@ -102,7 +104,11 @@
   // Called by background after desktopCapture gives a streamId
   async function startCapture(streamId, targetIds) {
     try {
-      // getUserMedia with desktopCapture streamId — works in page context
+      console.log('[SW Content] Starting capture with streamId:', streamId);
+      console.log('[SW Content] Target IDs:', targetIds);
+      
+      // Use getDisplayMedia with the streamId from desktopCapture API
+      // This is the modern approach that works in MV3 content scripts
       localStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
@@ -116,7 +122,9 @@
         }
       });
 
-      // Try to add audio (optional)
+      console.log('[SW Content] Stream obtained, tracks:', localStream.getTracks().length);
+      
+      // Try to add system audio (optional)
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -127,19 +135,27 @@
           },
           video: false
         });
-        audioStream.getAudioTracks().forEach(t => localStream.addTrack(t));
-      } catch { }
+        const audioTracks = audioStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          audioTracks.forEach(t => localStream.addTrack(t));
+          console.log('[SW Content] Audio tracks added:', audioTracks.length);
+        }
+      } catch (audioErr) {
+        console.warn('[SW Content] Audio capture failed (non-critical):', audioErr.message);
+      }
 
       // Watch for native "Stop sharing" button
       const videoTrack = localStream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.onended = () => {
+          console.log('[SW Content] Video track ended by user');
           stopCapture();
           relay('CONTENT_SHARE_ENDED', {});
         };
       }
 
       addChat('System', 'Screen captured! Connecting to guests…');
+      console.log('[SW Content] Creating offers for', (targetIds || []).length, 'targets');
 
       // Create offers for all existing room members
       for (const id of (targetIds || [])) {
@@ -147,8 +163,10 @@
       }
 
       addChat('System', `Offer sent to ${(targetIds || []).length} guest(s)`);
+      console.log('[SW Content] Capture started successfully');
     } catch (err) {
       console.error('[SW Content] startCapture failed:', err);
+      console.error('[SW Content] Error details:', err.name, err.message);
       addChat('Error', 'Screen capture failed: ' + err.message);
       sharingActive = false;
       updateShareBtn();
@@ -165,30 +183,38 @@
   }
 
   async function createOffer(targetId) {
+    console.log('[SW Content] Creating offer for:', targetId);
     const pc = getOrCreatePeer(targetId);
 
     if (localStream) {
       localStream.getTracks().forEach(t => {
         const senders = pc.getSenders().map(s => s.track);
-        if (!senders.includes(t)) pc.addTrack(t, localStream);
+        if (!senders.includes(t)) {
+          console.log('[SW Content] Adding track to peer:', t.kind, t.id);
+          pc.addTrack(t, localStream);
+        }
       });
     }
 
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      console.log('[SW Content] Offer set as local description');
       relay('CONTENT_SIGNAL', { targetId, signalData: { offer } });
-      console.log('[SW Content] Offer created for', targetId);
+      console.log('[SW Content] Offer sent to', targetId);
     } catch (e) {
       console.error('[SW Content] createOffer error:', e);
+      addChat('Error', 'Failed to create offer for ' + targetId);
     }
   }
 
   async function handleSignal(senderId, signalData) {
+    console.log('[SW Content] Handling signal from:', senderId, signalData);
     const pc = getOrCreatePeer(senderId);
 
     try {
       if (signalData.offer) {
+        console.log('[SW Content] Received offer from:', senderId);
         // Guest → host: this shouldn't happen normally (host only sends offers)
         await pc.setRemoteDescription(new RTCSessionDescription(signalData.offer));
         if (localStream) {
@@ -203,6 +229,7 @@
         drainIceQueue(pc);
 
       } else if (signalData.answer) {
+        console.log('[SW Content] Received answer from:', senderId);
         await pc.setRemoteDescription(new RTCSessionDescription(signalData.answer));
         drainIceQueue(pc);
 
@@ -223,12 +250,14 @@
   function getOrCreatePeer(peerId) {
     if (rtcPeers[peerId]) return rtcPeers[peerId];
 
+    console.log('[SW Content] Creating new peer for:', peerId);
     const pc = new RTCPeerConnection(ICE_SERVERS);
     pc._iceQueue = [];
     rtcPeers[peerId] = pc;
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
+        console.log('[SW Content] Sending ICE candidate to:', peerId);
         relay('CONTENT_SIGNAL', { targetId: peerId, signalData: { candidate: e.candidate } });
       }
     };
@@ -239,9 +268,30 @@
 
     pc.onconnectionstatechange = () => {
       console.log(`[SW Content] Peer ${peerId}: ${pc.connectionState}`);
+      if (pc.connectionState === 'connected') {
+        console.log('[SW Content] Peer connected:', peerId);
+        addChat('System', `Connected to ${peerId}`);
+      }
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        console.warn('[SW Content] Peer connection failed:', peerId);
+        addChat('System', `Connection to ${peerId} lost`);
         closePeer(peerId);
       }
+    };
+
+    // Handle incoming tracks (for guests receiving screen share)
+    pc.ontrack = (e) => {
+      console.log('[SW Content] Received remote track from:', peerId);
+      if (!e.streams || !e.streams[0]) {
+        console.warn('[SW Content] No streams in track event');
+        return;
+      }
+      
+      remoteStream = e.streams[0];
+      addChat('System', '🎥 Receiving screen share from host!');
+      
+      // Display the remote stream in a video element
+      showRemoteStream(remoteStream);
     };
 
     return pc;
@@ -251,12 +301,76 @@
     if (!rtcPeers[peerId]) return;
     try { rtcPeers[peerId].close(); } catch { }
     delete rtcPeers[peerId];
+    console.log('[SW Content] Closed peer:', peerId);
   }
 
   function drainIceQueue(pc) {
     if (!pc._iceQueue?.length) return;
+    console.log('[SW Content] Draining ICE queue:', pc._iceQueue.length, 'candidates');
     pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => { }));
     pc._iceQueue = [];
+  }
+
+  // Show remote stream in a floating video overlay
+  function showRemoteStream(stream) {
+    // Check if already showing
+    let remoteVideo = document.getElementById('_sw_remote_video');
+    if (!remoteVideo) {
+      // Create video element
+      remoteVideo = document.createElement('video');
+      remoteVideo.id = '_sw_remote_video';
+      remoteVideo.autoplay = true;
+      remoteVideo.playsInline = true;
+      remoteVideo.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        width: 480px;
+        max-width: 50vw;
+        border-radius: 12px;
+        border: 2px solid rgba(124, 159, 255, 0.3);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        z-index: 2147483646;
+        background: #000;
+      `;
+      
+      // Add close button
+      const closeBtn = document.createElement('button');
+      closeBtn.id = '_sw_remote_close';
+      closeBtn.innerHTML = '✕';
+      closeBtn.style.cssText = `
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.7);
+        color: white;
+        border: none;
+        cursor: pointer;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2147483647;
+      `;
+      closeBtn.onclick = () => {
+        remoteVideo.style.display = 'none';
+        addChat('System', 'Screen share hidden. You can still watch synced video.');
+      };
+      
+      remoteVideo.appendChild(closeBtn);
+      document.body.appendChild(remoteVideo);
+      
+      addChat('System', 'Screen share video displayed (top-right corner)');
+    }
+    
+    remoteVideo.srcObject = stream;
+    remoteVideo.style.display = 'block';
+    remoteVideo.play().catch(err => {
+      console.warn('[SW Content] Remote video play error:', err);
+    });
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -315,6 +429,9 @@
         updateShareBtn();
         addChat('System', 'Screen sharing stopped');
         stopCapture();
+        // Hide remote video if showing
+        const remoteVid = document.getElementById('_sw_remote_video');
+        if (remoteVid) remoteVid.style.display = 'none';
         return false;
 
       case 'BG_STATUS':
@@ -513,12 +630,26 @@
   // ── Share button ──────────────────────────────────────────
   async function handleShareClick() {
     if (sharingActive) {
+      console.log('[SW Content] Stopping share');
       relay('CONTENT_STOP_SHARE');
       sharingActive = false;
       updateShareBtn();
       stopCapture();
       return;
     }
+    
+    console.log('[SW Content] Starting share - checking connection state');
+    
+    // Check if we're in a room
+    const storage = await new Promise(resolve => {
+      chrome.storage.local.get(['sw_room', 'wsConnected'], resolve);
+    });
+    
+    if (!storage.sw_room || !storage.wsConnected) {
+      addChat('Error', 'You must join a room before sharing your screen');
+      return;
+    }
+    
     addChat('System', 'Opening screen share picker…');
     const res = await chrome.runtime.sendMessage({ type: 'CONTENT_START_SHARE' });
     if (res?.ok) {
@@ -527,7 +658,9 @@
       sharingActive = true;
       updateShareBtn();
     } else {
-      addChat('Error', 'Share failed: ' + (res?.error || 'Permission denied'));
+      const errorMsg = res?.error || 'Permission denied';
+      console.error('[SW Content] Share failed:', errorMsg);
+      addChat('Error', 'Share failed: ' + errorMsg);
       sharingActive = false;
       updateShareBtn();
     }

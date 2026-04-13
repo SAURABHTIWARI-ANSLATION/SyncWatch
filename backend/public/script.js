@@ -281,14 +281,19 @@ function hideWaitingSplash() {
 
 // ── 7. WebRTC ─────────────────────────────────────────────
 async function handleSignal(senderId, signal) {
+  console.log('[WC] Handling signal from:', senderId, signal);
   let pc = rtcPeers[senderId];
   if (!pc) {
+    console.log('[WC] Creating new peer for:', senderId);
     pc = new RTCPeerConnection(ICE_SERVERS);
     pc._iceQueue = [];
     rtcPeers[senderId] = pc;
 
     pc.onicecandidate = e => {
-      if (e.candidate) send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
+      if (e.candidate) {
+        console.log('[WC] Sending ICE candidate to:', senderId);
+        send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
+      }
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -296,7 +301,10 @@ async function handleSignal(senderId, signal) {
     };
 
     pc.ontrack = e => {
-      if (!e.streams || !e.streams[0]) return;
+      if (!e.streams || !e.streams[0]) {
+        console.warn('[WC] No streams in track event');
+        return;
+      }
       console.log('[WC] Received remote track from:', senderId);
 
       const remoteVid = document.getElementById('remote-stream');
@@ -316,7 +324,11 @@ async function handleSignal(senderId, signal) {
 
     pc.onconnectionstatechange = () => {
       console.log('[WC] Connection state:', pc.connectionState, 'for peer:', senderId);
+      if (pc.connectionState === 'connected') {
+        console.log('[WC] Peer connected:', senderId);
+      }
       if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        console.warn('[WC] Peer connection lost:', senderId, pc.connectionState);
         const remoteVid = document.getElementById('remote-stream');
         const ytPlayer = document.getElementById('yt-player');
         if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; }
@@ -331,13 +343,16 @@ async function handleSignal(senderId, signal) {
 
   try {
     if (signal.offer) {
+      console.log('[WC] Setting remote description (offer)');
       await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      console.log('[WC] Sending answer');
       send({ type: 'signal', targetId: senderId, signalData: { answer } });
       drainIceQueue(pc);
 
     } else if (signal.answer) {
+      console.log('[WC] Setting remote description (answer)');
       await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
       drainIceQueue(pc);
 
