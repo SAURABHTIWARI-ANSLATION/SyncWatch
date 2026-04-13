@@ -2,3 +2,7 @@ node_modules/
 .DS_Store
 *.log
 .env
+dist/
+build/
+backend/node_modules/
+extension/node_modules/

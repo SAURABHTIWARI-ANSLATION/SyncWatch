@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "SyncWatch",
-  "version": "1.0.0",
-  "description": "Watch videos in sync with friends — real-time play, pause, seek & chat.",
+  "version": "2.0.0",
+  "description": "Watch videos in sync with friends — persistent real-time play, pause, seek & chat.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "offscreen",
+    "desktopCapture"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -32,7 +34,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["content.js"],
+      "resources": ["content.js", "offscreen.html"],
       "matches": ["<all_urls>"]
     }
   ]

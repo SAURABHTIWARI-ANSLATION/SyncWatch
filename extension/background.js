@@ -1,31 +1,387 @@
-// SyncWatch - Background Service Worker (MV3)
+// SyncWatch - Background Service Worker v2 (MV3)
+// WebSocket + Offscreen doc (WebRTC) both managed here.
+// Content.js is demoted to pure DOM/overlay duties only.
+'use strict';
 
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('[SyncWatch] Installed');
-});
+const WS_URL      = 'wss://syncwatch-o4za.onrender.com';
+const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html');
 
-// Only these URL schemes can receive content scripts
-function isInjectableUrl(url) {
-  if (!url) return false;
-  return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('file://');
+// ── Runtime state ─────────────────────────────────────────
+let ws                = null;
+let roomId            = null;
+let userId            = null;
+let connected         = false;
+let isSharing         = false;
+let roomUsers         = new Set();
+let wsReconnectTimer  = null;
+let heartbeatTimer    = null;
+let syncTimer         = null;
+
+// ═══════════════════════════════════════════════════════════
+// WEBSOCKET
+// ═══════════════════════════════════════════════════════════
+function wsConnect() {
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+  console.log('[BG] Connecting WS…');
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    connected = true;
+    console.log('[BG] WS open');
+    wsSend({ type: 'join', roomId });
+    clearInterval(heartbeatTimer);
+    clearInterval(syncTimer);
+    heartbeatTimer = setInterval(() => wsSend({ type: 'heartbeat' }), 20000);
+    syncTimer      = setInterval(() => wsSend({ type: 'sync_request' }), 5000);
+    setStorage({ wsConnected: true });
+    broadcastTabs({ type: 'BG_STATUS', connected: true });
+  };
+
+  ws.onmessage = (e) => {
+    try { handleServerMsg(JSON.parse(e.data)); } catch {}
+  };
+
+  ws.onclose = () => {
+    connected = false;
+    clearInterval(heartbeatTimer);
+    clearInterval(syncTimer);
+    console.log('[BG] WS closed');
+    setStorage({ wsConnected: false });
+    broadcastTabs({ type: 'BG_STATUS', connected: false });
+    if (roomId) {
+      // Auto-reconnect while still in a room
+      wsReconnectTimer = setTimeout(wsConnect, 3000);
+    }
+  };
+
+  ws.onerror = (e) => console.error('[BG] WS error', e);
 }
 
-// Get the real active tab.
-// IMPORTANT: Service workers have NO "current window", so currentWindow:true
-// returns nothing. We must use lastFocusedWindow:true instead.
+function wsSend(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+}
+
+function wsDisconnect() {
+  clearTimeout(wsReconnectTimer);
+  clearInterval(heartbeatTimer);
+  clearInterval(syncTimer);
+  if (ws) { try { ws.close(); } catch {} ws = null; }
+  connected = false;
+  roomId    = null;
+  userId    = null;
+  roomUsers.clear();
+}
+
+// ═══════════════════════════════════════════════════════════
+// SERVER MESSAGE HANDLER
+// ═══════════════════════════════════════════════════════════
+function handleServerMsg(msg) {
+  switch (msg.type) {
+
+    case 'joined': {
+      userId    = msg.userId;
+      roomUsers = new Set(msg.otherUsers || []);
+      setStorage({ userId, memberCount: msg.memberCount, connected: true });
+      broadcastTabs({ type: 'BG_JOINED', state: msg.state, roomId, userId, memberCount: msg.memberCount });
+      broadcastTabs({ type: 'BG_CHAT', author: 'System', text: `You joined · ${msg.memberCount} ${msg.memberCount === 1 ? 'person' : 'people'} watching` });
+      // If already sharing, offer to existing members
+      if (isSharing && msg.otherUsers?.length) {
+        msg.otherUsers.forEach(uid => msgOffscreen({ type: 'CREATE_OFFER', targetId: uid }));
+      }
+      break;
+    }
+
+    case 'play':
+      broadcastTabs({ type: 'BG_PLAY', time: msg.time, fromUserId: msg.userId });
+      if (msg.userId !== userId) broadcastTabs({ type: 'BG_CHAT', author: 'Sync', text: `▶ ${msg.userId} played at ${fmt(msg.time)}` });
+      break;
+
+    case 'pause':
+      broadcastTabs({ type: 'BG_PAUSE', time: msg.time, fromUserId: msg.userId });
+      if (msg.userId !== userId) broadcastTabs({ type: 'BG_CHAT', author: 'Sync', text: `⏸ ${msg.userId} paused at ${fmt(msg.time)}` });
+      break;
+
+    case 'seek':
+      broadcastTabs({ type: 'BG_SEEK', time: msg.time, fromUserId: msg.userId });
+      if (msg.userId !== userId) broadcastTabs({ type: 'BG_CHAT', author: 'Sync', text: `⏩ ${msg.userId} seeked to ${fmt(msg.time)}` });
+      break;
+
+    case 'sync':
+      broadcastTabs({ type: 'BG_SYNC', state: msg.state });
+      break;
+
+    case 'chat':
+      appendChatHistory({ author: msg.userId, text: msg.text, ts: msg.ts || Date.now() });
+      broadcastTabs({ type: 'BG_CHAT', author: msg.userId, text: msg.text });
+      break;
+
+    case 'user_joined':
+      roomUsers.add(msg.userId);
+      setStorage({ memberCount: msg.memberCount });
+      broadcastTabs({ type: 'BG_MEMBER_COUNT', count: msg.memberCount });
+      broadcastTabs({ type: 'BG_CHAT', author: 'System', text: `${msg.userId} joined · ${msg.memberCount} watching` });
+      if (isSharing) msgOffscreen({ type: 'CREATE_OFFER', targetId: msg.userId });
+      break;
+
+    case 'user_left':
+      roomUsers.delete(msg.userId);
+      setStorage({ memberCount: msg.memberCount });
+      msgOffscreen({ type: 'PEER_LEFT', peerId: msg.userId });
+      broadcastTabs({ type: 'BG_MEMBER_COUNT', count: msg.memberCount });
+      broadcastTabs({ type: 'BG_CHAT', author: 'System', text: `${msg.userId} left · ${msg.memberCount} watching` });
+      break;
+
+    case 'signal':
+      // Route WebRTC signal to offscreen doc
+      msgOffscreen({ type: 'SIGNAL', senderId: msg.senderId, signalData: msg.signalData });
+      break;
+
+    case 'heartbeat_ack':
+      break;
+
+    case 'error':
+      broadcastTabs({ type: 'BG_ERROR', msg: msg.msg });
+      break;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// OFFSCREEN DOCUMENT (WebRTC lives here)
+// ═══════════════════════════════════════════════════════════
+async function ensureOffscreen() {
+  try {
+    const existing = await chrome.offscreen.hasDocument();
+    if (existing) return;
+  } catch {}
+  try {
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['USER_MEDIA'],
+      justification: 'SyncWatch WebRTC peer connections for screen share'
+    });
+    await sleep(400); // Let it initialize
+  } catch (e) {
+    console.warn('[BG] Offscreen create failed:', e.message);
+  }
+}
+
+async function destroyOffscreen() {
+  try { await chrome.offscreen.closeDocument(); } catch {}
+}
+
+function msgOffscreen(payload) {
+  chrome.runtime.sendMessage({ _offscreen: true, ...payload }).catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════════
+// SCREEN SHARE (desktopCapture → offscreen streamId)
+// ═══════════════════════════════════════════════════════════
+function startScreenShare(requestingTabId) {
+  return new Promise((resolve, reject) => {
+    // Build sources list
+    chrome.desktopCapture.chooseDesktopMedia(
+      ['screen', 'window', 'tab'],
+      requestingTabId ? { id: requestingTabId, index: 0 } : undefined,
+      async (streamId) => {
+        if (!streamId) return reject(new Error('User cancelled'));
+        try {
+          await ensureOffscreen();
+          msgOffscreen({ type: 'START_CAPTURE', streamId, targetIds: [...roomUsers] });
+          isSharing = true;
+          setStorage({ isSharing: true });
+          broadcastTabs({ type: 'BG_SHARE_STARTED' });
+          resolve({ ok: true });
+        } catch (e) {
+          reject(e);
+        }
+      }
+    );
+  });
+}
+
+function stopScreenShare() {
+  msgOffscreen({ type: 'STOP_CAPTURE' });
+  isSharing = false;
+  setStorage({ isSharing: false });
+  broadcastTabs({ type: 'BG_SHARE_STOPPED' });
+}
+
+// ═══════════════════════════════════════════════════════════
+// ROOM OPERATIONS
+// ═══════════════════════════════════════════════════════════
+async function joinRoom(rId) {
+  // Clean up existing state
+  wsDisconnect();
+  stopScreenShare();
+  await destroyOffscreen();
+
+  roomId = rId.toUpperCase();
+  await chrome.storage.local.set({ sw_room: roomId, chatHistory: [], connected: false, isSharing: false });
+
+  // Start connection
+  wsConnect();
+
+  // Inject and show overlay on active tab
+  const tab = await getActiveTab();
+  if (tab && isInjectableUrl(tab.url)) {
+    await ensureContentScript(tab.id);
+    chrome.tabs.sendMessage(tab.id, { type: 'BG_SHOW_OVERLAY', roomId }).catch(() => {});
+  }
+}
+
+async function leaveRoom() {
+  wsDisconnect();
+  stopScreenShare();
+  await destroyOffscreen();
+  await chrome.storage.local.set({ sw_room: null, chatHistory: [], connected: false, isSharing: false, memberCount: 0 });
+  broadcastTabs({ type: 'BG_LEFT_ROOM' });
+}
+
+// ═══════════════════════════════════════════════════════════
+// MESSAGE ROUTER
+// ═══════════════════════════════════════════════════════════
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+
+  // ── Messages from offscreen doc ──
+  if (msg._offscreen_reply) {
+    handleOffscreenReply(msg);
+    return false;
+  }
+
+  // ── Relay from popup (legacy wrapper) ──
+  if (msg.type === 'RELAY_TO_CONTENT') {
+    handleRelay(msg.payload, sender, sendResponse);
+    return true;
+  }
+
+  // ── From content.js ──
+  switch (msg.type) {
+    case 'ping':
+      sendResponse({ alive: true });
+      return false;
+
+    case 'CONTENT_PLAY':
+      wsSend({ type: 'play', time: msg.time });
+      return false;
+
+    case 'CONTENT_PAUSE':
+      wsSend({ type: 'pause', time: msg.time });
+      return false;
+
+    case 'CONTENT_SEEK':
+      wsSend({ type: 'seek', time: msg.time });
+      return false;
+
+    case 'CONTENT_CHAT':
+      if (connected) {
+        wsSend({ type: 'chat', text: msg.text });
+        appendChatHistory({ author: 'You', text: msg.text, ts: Date.now() });
+      }
+      return false;
+
+    case 'CONTENT_START_SHARE': {
+      const tabId = sender.tab?.id;
+      startScreenShare(tabId)
+        .then(() => sendResponse({ ok: true }))
+        .catch(e => sendResponse({ ok: false, error: e.message }));
+      return true;
+    }
+
+    case 'CONTENT_STOP_SHARE':
+      stopScreenShare();
+      sendResponse({ ok: true });
+      return false;
+
+    case 'CONTENT_GET_STATUS':
+      sendResponse({ connected, roomId, userId, isSharing, hasVideo: true });
+      return false;
+
+    // ── Offscreen doc replying back to background ──
+    case 'OFFSCREEN_SIGNAL':
+      wsSend({ type: 'signal', targetId: msg.targetId, signalData: msg.signalData });
+      return false;
+
+    case 'OFFSCREEN_SHARE_ENDED':
+      isSharing = false;
+      setStorage({ isSharing: false });
+      broadcastTabs({ type: 'BG_SHARE_STOPPED' });
+      return false;
+
+    case 'OFFSCREEN_READY':
+      console.log('[BG] Offscreen doc ready');
+      return false;
+  }
+
+  return false;
+});
+
+function handleOffscreenReply(msg) {
+  if (msg.type === 'OFFSCREEN_SIGNAL') {
+    wsSend({ type: 'signal', targetId: msg.targetId, signalData: msg.signalData });
+  } else if (msg.type === 'OFFSCREEN_SHARE_ENDED') {
+    isSharing = false;
+    setStorage({ isSharing: false });
+    broadcastTabs({ type: 'BG_SHARE_STOPPED' });
+  }
+}
+
+async function handleRelay(payload, sender, sendResponse) {
+  if (!payload) return sendResponse({ ok: false, error: 'no payload' });
+
+  switch (payload.type) {
+    case 'GET_STATUS':
+      sendResponse({ ok: true, data: { connected, roomId, userId, isSharing, hasVideo: true } });
+      break;
+
+    case 'JOIN_ROOM':
+      try {
+        await joinRoom(payload.roomId);
+        sendResponse({ ok: true, data: { ok: true } });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      break;
+
+    case 'LEAVE_ROOM':
+      await leaveRoom();
+      sendResponse({ ok: true, data: { ok: true } });
+      break;
+
+    default:
+      // Fall through to content script injection for unknown relay types
+      await relayToContentScript(payload, sender, sendResponse);
+  }
+}
+
+async function relayToContentScript(payload, sender, sendResponse) {
+  const tab = await getActiveTab();
+  if (!tab) return sendResponse({ ok: false, error: 'no_tab', hint: 'No active tab' });
+  if (!isInjectableUrl(tab.url)) return sendResponse({ ok: false, error: 'bad_page', hint: 'Navigate to a video page first.' });
+  const inject = await ensureContentScript(tab.id);
+  if (!inject.ok) return sendResponse({ ok: false, error: 'inject_failed', hint: inject.error });
+  try {
+    const res = await chrome.tabs.sendMessage(tab.id, payload);
+    sendResponse({ ok: true, data: res });
+  } catch (e) {
+    sendResponse({ ok: false, error: 'msg_failed', hint: e.message });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════
+function isInjectableUrl(url) {
+  return url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('file://'));
+}
+
 async function getActiveTab() {
-  return new Promise((resolve) => {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-      if (tabs && tabs.length > 0) return resolve(tabs[0]);
-      // Fallback: any active injectable tab
-      chrome.tabs.query({ active: true }, (all) => {
-        resolve(all?.find(t => isInjectableUrl(t.url)) || null);
-      });
+  return new Promise(resolve => {
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, tabs => {
+      resolve(tabs?.[0] || null);
     });
   });
 }
 
-// Inject content.js if not already running
 async function ensureContentScript(tabId) {
   try {
     const r = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
@@ -33,46 +389,52 @@ async function ensureContentScript(tabId) {
   } catch {}
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-    await new Promise(r => setTimeout(r, 400));
+    await sleep(400);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message };
   }
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type !== 'RELAY_TO_CONTENT') return false;
+function broadcastTabs(msg) {
+  chrome.tabs.query({}, tabs => {
+    tabs.forEach(tab => chrome.tabs.sendMessage(tab.id, msg).catch(() => {}));
+  });
+}
 
-  (async () => {
-    const tab = await getActiveTab();
+function setStorage(data) {
+  chrome.storage.local.set(data).catch(() => {});
+}
 
-    if (!tab) {
-      sendResponse({ ok: false, error: 'no_tab', hint: 'No active tab found' });
-      return;
-    }
+async function appendChatHistory(entry) {
+  const { chatHistory = [] } = await chrome.storage.local.get('chatHistory').catch(() => ({}));
+  chatHistory.push(entry);
+  if (chatHistory.length > 200) chatHistory.splice(0, chatHistory.length - 200);
+  chrome.storage.local.set({ chatHistory }).catch(() => {});
+}
 
-    if (!isInjectableUrl(tab.url)) {
-      sendResponse({
-        ok: false,
-        error: 'bad_page',
-        hint: `Open a webpage with a video first.\nCurrent page: ${tab.url || 'unknown'}`
-      });
-      return;
-    }
+function fmt(secs) {
+  const s = Math.floor(secs), m = Math.floor(s / 60), h = Math.floor(m / 60);
+  if (h > 0) return `${h}:${String(m % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  return `${m}:${String(s % 60).padStart(2, '0')}`;
+}
 
-    const inject = await ensureContentScript(tab.id);
-    if (!inject.ok) {
-      sendResponse({ ok: false, error: 'inject_failed', hint: inject.error });
-      return;
-    }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    try {
-      const res = await chrome.tabs.sendMessage(tab.id, msg.payload);
-      sendResponse({ ok: true, data: res });
-    } catch (e) {
-      sendResponse({ ok: false, error: 'msg_failed', hint: e.message });
-    }
-  })();
-
-  return true;
+// ═══════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════
+chrome.runtime.onInstalled.addListener(() => {
+  console.log('[SyncWatch] Installed v2.0');
+  chrome.storage.local.set({ connected: false, roomId: null, chatHistory: [], isSharing: false });
 });
+
+// Restore room on service-worker restart
+(async () => {
+  const { sw_room, wsConnected } = await chrome.storage.local.get(['sw_room', 'wsConnected']);
+  if (sw_room && wsConnected) {
+    console.log('[BG] Restoring room:', sw_room);
+    roomId = sw_room;
+    wsConnect();
+  }
+})();

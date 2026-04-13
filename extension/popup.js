@@ -1,4 +1,4 @@
-// SyncWatch Popup
+// SyncWatch Popup v2
 'use strict';
 
 const API = 'https://syncwatch-o4za.onrender.com';
@@ -51,8 +51,8 @@ function enterIdle() {
   chrome.storage.local.remove('sw_room');
 }
 
-// ── Relay to content script via background ────────────────
-function relayToContent(payload) {
+// ── Message relay to background (which now handles JOIN/LEAVE) ──
+function relayToBackground(payload) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type: 'RELAY_TO_CONTENT', payload }, res => {
       if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
@@ -63,7 +63,7 @@ function relayToContent(payload) {
   });
 }
 
-// ── Pre-flight tab check (run before any action) ──────────
+// ── Pre-flight tab check ──────────────────────────────────
 async function checkTabReady() {
   const tab = await getActiveTab();
   if (!tab) {
@@ -71,12 +71,10 @@ async function checkTabReady() {
     return null;
   }
   if (!isInjectableUrl(tab.url)) {
-    // Friendly page name
     let pageName = tab.url || 'this page';
     if (!tab.url || tab.url.startsWith('chrome://')) pageName = 'Chrome system page';
     else if (tab.url.startsWith('chrome-extension://')) pageName = 'Extension page';
     else if (tab.url === 'about:blank' || tab.url === 'about:newtab') pageName = 'New Tab';
-
     flash(`⚠ Go to a webpage with a video first!\n(${pageName} cannot run scripts)`, 'err');
     setTabWarning(true, pageName);
     return null;
@@ -99,7 +97,7 @@ function setTabWarning(show, pageName = '') {
 // ── Server health ─────────────────────────────────────────
 async function checkServer() {
   try {
-    const r = await fetch(`${API}/`, { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${API}/`, { signal: AbortSignal.timeout(2500) });
     if (r.ok) { $('server-dot').className = 'server-dot online'; return true; }
   } catch {}
   $('server-dot').className = 'server-dot offline';
@@ -117,15 +115,13 @@ $('btn-create').addEventListener('click', async () => {
 
   try {
     const serverOk = await checkServer();
-    if (!serverOk) {
-      flash('Backend offline! Run: cd backend && npm start', 'err');
-      return;
-    }
+    if (!serverOk) { flash('Backend offline! Check server.', 'err'); return; }
 
     const res  = await fetch(`${API}/room/create`, { method: 'POST' });
     const data = await res.json();
 
-    await relayToContent({ type: 'JOIN_ROOM', roomId: data.roomId });
+    // Background now handles the WebSocket connection directly
+    await relayToBackground({ type: 'JOIN_ROOM', roomId: data.roomId });
     enterConnected(data.roomId);
     flash('Room created! Share the ID 🎉', 'ok');
   } catch (e) {
@@ -156,13 +152,13 @@ async function joinRoom() {
 
   try {
     const serverOk = await checkServer();
-    if (!serverOk) { flash('Backend offline! Run: cd backend && npm start', 'err'); return; }
+    if (!serverOk) { flash('Backend offline! Check server.', 'err'); return; }
 
     const r = await fetch(`${API}/room/${roomId}`);
     const { exists } = await r.json();
     if (!exists) { flash('Room not found', 'err'); return; }
 
-    await relayToContent({ type: 'JOIN_ROOM', roomId });
+    await relayToBackground({ type: 'JOIN_ROOM', roomId });
     enterConnected(roomId);
     flash('Joined successfully! 🎬', 'ok');
   } catch (e) {
@@ -175,7 +171,7 @@ async function joinRoom() {
 
 // ── Leave Room ────────────────────────────────────────────
 $('btn-leave').addEventListener('click', async () => {
-  try { await relayToContent({ type: 'LEAVE_ROOM' }); } catch {}
+  try { await relayToBackground({ type: 'LEAVE_ROOM' }); } catch {}
   enterIdle();
   flash('Left room');
 });
@@ -192,27 +188,22 @@ $('btn-copy').addEventListener('click', () => {
 $('btn-share').addEventListener('click', () => {
   if (!activeRoomId) return;
   const webLink = `https://syncwatch-o4za.onrender.com/join/${activeRoomId}`;
-  const message = `🎬 Let's watch together!\n\nJoin my SyncWatch room:\n${webLink}\n\n(No extension required for desktop browsers)`;
-  
+  const message = `🎬 Let's watch together!\n\nJoin my SyncWatch room:\n${webLink}\n\n(No extension required for guests)`;
+
   navigator.clipboard.writeText(message)
     .then(() => {
-
       const btn = $('btn-share');
-      const originalText = btn.innerHTML;
+      const orig = btn.innerHTML;
       btn.textContent = 'Invite Copied! ✅';
       btn.style.color = '#4ade80';
       btn.style.borderColor = '#4ade80';
-      setTimeout(() => {
-        btn.innerHTML = originalText;
-        btn.style.color = '';
-        btn.style.borderColor = '';
-      }, 2500);
+      setTimeout(() => { btn.innerHTML = orig; btn.style.color = btn.style.borderColor = ''; }, 2500);
       flash('Full invite copied to clipboard!', 'ok');
     })
     .catch(() => flash('Could not copy invite', 'err'));
 });
 
-// ── Status poll (video detection) ─────────────────────────
+// ── Status poll (video detection via background state) ─────
 let pollTimer = null;
 
 function startStatusPoll() {
@@ -228,18 +219,23 @@ function stopStatusPoll() {
 
 async function pollStatus() {
   try {
-    const status = await relayToContent({ type: 'GET_STATUS' });
+    const status = await relayToBackground({ type: 'GET_STATUS' });
     if (!status) return;
 
     const vDot   = document.querySelector('.video-dot');
     const vLabel = $('video-label');
 
     if (status.hasVideo) {
-      if (vDot)   { vDot.style.background = '#7c9fff'; }
+      if (vDot)   vDot.style.background = '#7c9fff';
       if (vLabel) vLabel.textContent = 'Video detected ✓';
     } else {
-      if (vDot)   { vDot.style.background = '#334155'; }
+      if (vDot)   vDot.style.background = '#334155';
       if (vLabel) vLabel.textContent = 'Searching for video…';
+    }
+
+    // Show sharing indicator
+    if (status.isSharing) {
+      if (vLabel) vLabel.textContent = '📺 Sharing screen';
     }
   } catch {}
 }
@@ -248,7 +244,6 @@ async function pollStatus() {
 (async function init() {
   checkServer();
 
-  // Check current tab and show warning if needed
   const tab = await getActiveTab();
   if (tab && !isInjectableUrl(tab.url)) {
     let pageName = 'Chrome system page';
@@ -257,16 +252,16 @@ async function pollStatus() {
     setTabWarning(true, pageName);
   }
 
-  // Try to restore previous session
+  // Try to restore background connection state
   try {
-    const status = await relayToContent({ type: 'GET_STATUS' });
+    const status = await relayToBackground({ type: 'GET_STATUS' });
     if (status?.connected && status?.roomId) {
       enterConnected(status.roomId);
       return;
     }
   } catch {}
 
-  // Pre-fill last room ID
+  // Pre-fill last room ID from storage
   try {
     const { sw_room } = await chrome.storage.local.get('sw_room');
     if (sw_room) $('inp-room').value = sw_room;
