@@ -16,6 +16,9 @@ const RETRY_DELAYS = [2000, 3000, 5000, 8000, 10000, 15000, 20000, 30000];
 
 // WebRTC
 let rtcPeers = {};
+let knownPeers = new Set();
+let localStream = null;
+let isWebClientSharing = false;
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -155,6 +158,9 @@ function handleMessage(msg) {
       document.getElementById('room-id-display').textContent = roomId;
       document.getElementById('loading-screen').classList.add('hidden');
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
+      document.getElementById('btn-web-share').classList.remove('hidden');
+      knownPeers.clear();
+      (msg.otherUsers || []).forEach(id => knownPeers.add(id));
       showWaitingSplash();
       if (msg.state && (msg.state.playing || msg.state.time > 2)) waitForPlayerThenSync(msg.state);
       break;
@@ -184,11 +190,16 @@ function handleMessage(msg) {
       break;
 
     case 'user_joined':
+      knownPeers.add(msg.userId);
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       addChatMessage('System', `${msg.userId} joined`);
+      if (localStream) {
+        createPeerForViewer(msg.userId);
+      }
       break;
 
     case 'user_left':
+      knownPeers.delete(msg.userId);
       if (rtcPeers[msg.userId]) { rtcPeers[msg.userId].close(); delete rtcPeers[msg.userId]; }
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       addChatMessage('System', `${msg.userId} left`);
@@ -263,58 +274,166 @@ function hideWaitingSplash() {
 }
 
 // ── 7. WebRTC ─────────────────────────────────────────────
-async function handleSignal(senderId, signal) {
-  let pc = rtcPeers[senderId];
-  if (!pc) {
-    pc = new RTCPeerConnection(ICE_SERVERS);
-    pc._iceQueue = [];
-    rtcPeers[senderId] = pc;
 
-    pc.onicecandidate = e => {
-      if (e.candidate) send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
-    };
+document.getElementById('btn-web-share').addEventListener('click', () => {
+  if (isWebClientSharing) stopLocalScreenShare();
+  else startLocalScreenShare();
+});
 
-    pc.ontrack = e => {
-      if (!e.streams?.[0]) return;
-      const remoteVid = document.getElementById('remote-stream');
-      const ytPlayer = document.getElementById('yt-player');
-      if (remoteVid) { remoteVid.srcObject = e.streams[0]; remoteVid.style.display = 'block'; remoteVid.play().catch(() => { }); }
-      if (ytPlayer) ytPlayer.style.display = 'none';
-      streamConnected = true;
-      hideWaitingSplash();
-      addChatMessage('System', '🎥 Live screen share connected!');
-    };
+async function startLocalScreenShare() {
+  try {
+    localStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
+    localStream.getTracks().forEach(track => { track.onended = () => stopLocalScreenShare(); });
+    
+    isWebClientSharing = true;
+    document.getElementById('btn-web-share').innerHTML = '🔴 Stop Share';
+    document.getElementById('btn-web-share').style.background = 'rgba(244,63,94,0.15)';
+    document.getElementById('btn-web-share').style.color = '#f43f5e';
+    document.getElementById('btn-web-share').style.borderColor = 'rgba(244,63,94,0.3)';
 
-    pc.onconnectionstatechange = () => {
-      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-        const remoteVid = document.getElementById('remote-stream');
-        const ytPlayer = document.getElementById('yt-player');
-        if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; }
-        if (ytPlayer) ytPlayer.style.display = 'block';
-        streamConnected = false;
-        showWaitingSplash();
-        addChatMessage('System', 'Screen share ended.');
-        delete rtcPeers[senderId];
-      }
-    };
+    // Play our own stream locally
+    const remoteVid = document.getElementById('remote-stream');
+    const ytPlayer = document.getElementById('yt-player');
+    if (remoteVid) {
+      remoteVid.srcObject = localStream;
+      remoteVid.style.display = 'block';
+      remoteVid.muted = true; // Mute ourselves so we don't hear our own audio
+      remoteVid.play().catch(() => {});
+    }
+    if (ytPlayer) ytPlayer.style.display = 'none';
+    hideWaitingSplash();
+    streamConnected = true;
+
+    // Send offer to all peers
+    const viewers = [...knownPeers];
+    for (const viewerId of viewers) {
+      await createPeerForViewer(viewerId);
+    }
+    addChatMessage('System', 'You started sharing your screen.');
+
+  } catch (e) {
+    console.error('[WC] Screen share error:', e);
+    addChatMessage('System', 'Error starting screen share.');
   }
+}
+
+function stopLocalScreenShare() {
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  isWebClientSharing = false;
+  document.getElementById('btn-web-share').innerHTML = '📡 Share Screen';
+  document.getElementById('btn-web-share').style.background = 'rgba(74,222,128,0.15)';
+  document.getElementById('btn-web-share').style.color = '#4ade80';
+  document.getElementById('btn-web-share').style.borderColor = 'rgba(74,222,128,0.3)';
+  
+  const remoteVid = document.getElementById('remote-stream');
+  const ytPlayer = document.getElementById('yt-player');
+  if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; remoteVid.muted = false; }
+  if (ytPlayer) ytPlayer.style.display = 'block';
+  streamConnected = false;
+  showWaitingSplash();
+  
+  Object.values(rtcPeers).forEach(pc => { try { pc.close(); } catch (_) { } });
+  rtcPeers = {};
+  addChatMessage('System', 'You stopped sharing your screen.');
+}
+
+async function createPeerForViewer(viewerId) {
+  if (!localStream) return null;
+
+  const pc = new RTCPeerConnection(ICE_SERVERS);
+  rtcPeers[viewerId] = pc;
+  pc._iceQueue = [];
+
+  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+  pc.onicecandidate = e => {
+    if (e.candidate) send({ type: 'signal', targetId: viewerId, signalData: { candidate: e.candidate } });
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      delete rtcPeers[viewerId];
+    }
+  };
 
   try {
-    if (signal.offer) {
-      await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      send({ type: 'signal', targetId: senderId, signalData: { answer } });
-      drainIceQueue(pc);
-    } else if (signal.answer) {
-      await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
-      drainIceQueue(pc);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    send({ type: 'signal', targetId: viewerId, signalData: { offer } });
+  } catch (e) {
+    console.error('[WC] createOffer error:', e);
+  }
+
+  return pc;
+}
+
+async function handleSignal(senderId, signal) {
+  if (localStream) {
+    // We are HOSTing from the web client
+    let pc = rtcPeers[senderId];
+    if (!pc) pc = await createPeerForViewer(senderId);
+    if (!pc) return;
+
+    if (signal.answer) {
+      try { await pc.setRemoteDescription(new RTCSessionDescription(signal.answer)); drainIceQueue(pc); } catch (e) {}
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
-      if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
+      if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => {});
       else pc._iceQueue.push(ice);
     }
-  } catch (e) { console.error('[WC] Signal error:', e); }
+  } else {
+    // We are VIEWER
+    let pc = rtcPeers[senderId];
+    if (!pc) {
+      pc = new RTCPeerConnection(ICE_SERVERS);
+      pc._iceQueue = [];
+      rtcPeers[senderId] = pc;
+
+      pc.onicecandidate = e => {
+        if (e.candidate) send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
+      };
+
+      pc.ontrack = e => {
+        if (!e.streams?.[0]) return;
+        const remoteVid = document.getElementById('remote-stream');
+        const ytPlayer = document.getElementById('yt-player');
+        if (remoteVid) { remoteVid.srcObject = e.streams[0]; remoteVid.style.display = 'block'; remoteVid.muted = false; remoteVid.play().catch(() => { }); }
+        if (ytPlayer) ytPlayer.style.display = 'none';
+        streamConnected = true;
+        hideWaitingSplash();
+        addChatMessage('System', '🎥 Live screen share connected!');
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+          const remoteVid = document.getElementById('remote-stream');
+          const ytPlayer = document.getElementById('yt-player');
+          if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; }
+          if (ytPlayer) ytPlayer.style.display = 'block';
+          streamConnected = false;
+          showWaitingSplash();
+          addChatMessage('System', 'Screen share ended.');
+          delete rtcPeers[senderId];
+        }
+      };
+    }
+
+    try {
+      if (signal.offer) {
+        await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        send({ type: 'signal', targetId: senderId, signalData: { answer } });
+        drainIceQueue(pc);
+      } else if (signal.candidate) {
+        const ice = new RTCIceCandidate(signal.candidate);
+        if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
+        else pc._iceQueue.push(ice);
+      }
+    } catch (e) {
+      console.error('[WC] Signal error:', e);
+    }
+  }
 }
 
 function drainIceQueue(pc) {
