@@ -6,15 +6,15 @@
 const WS_URL = 'wss://syncwatch-o4za.onrender.com';
 
 // ── Runtime state ─────────────────────────────────────────
-let ws               = null;
-let roomId           = null;
-let userId           = null;
-let connected        = false;
-let isSharing        = false;
-let roomUsers        = new Set();
+let ws = null;
+let roomId = null;
+let userId = null;
+let connected = false;
+let isSharing = false;
+let roomUsers = new Set();
 let wsReconnectTimer = null;
-let heartbeatTimer   = null;
-let syncTimer        = null;
+let heartbeatTimer = null;
+let syncTimer = null;
 
 // ═══════════════════════════════════════════════════════════
 // WEBSOCKET
@@ -31,13 +31,13 @@ function wsConnect() {
     clearInterval(heartbeatTimer);
     clearInterval(syncTimer);
     heartbeatTimer = setInterval(() => wsSend({ type: 'heartbeat' }), 20000);
-    syncTimer      = setInterval(() => wsSend({ type: 'sync_request' }), 5000);
+    syncTimer = setInterval(() => wsSend({ type: 'sync_request' }), 5000);
     setStorage({ wsConnected: true });
     broadcastTabs({ type: 'BG_STATUS', connected: true });
   };
 
   ws.onmessage = (e) => {
-    try { handleServerMsg(JSON.parse(e.data)); } catch {}
+    try { handleServerMsg(JSON.parse(e.data)); } catch { }
   };
 
   ws.onclose = () => {
@@ -63,10 +63,10 @@ function wsDisconnect() {
   clearTimeout(wsReconnectTimer);
   clearInterval(heartbeatTimer);
   clearInterval(syncTimer);
-  if (ws) { try { ws.close(); } catch {} ws = null; }
+  if (ws) { try { ws.close(); } catch { } ws = null; }
   connected = false;
-  roomId    = null;
-  userId    = null;
+  roomId = null;
+  userId = null;
   roomUsers.clear();
 }
 
@@ -77,7 +77,7 @@ function handleServerMsg(msg) {
   switch (msg.type) {
 
     case 'joined': {
-      userId    = msg.userId;
+      userId = msg.userId;
       roomUsers = new Set(msg.otherUsers || []);
       setStorage({ userId, memberCount: msg.memberCount, connected: true });
       broadcastTabs({ type: 'BG_JOINED', state: msg.state, roomId, userId, memberCount: msg.memberCount });
@@ -147,36 +147,49 @@ function handleServerMsg(msg) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// SCREEN SHARE — desktopCapture picker runs in BG,
-// streamId is sent to content.js which owns WebRTC
+// SCREEN SHARE
+// FIX: In MV3 service workers, desktopCapture.chooseDesktopMedia
+// REQUIRES a valid Tab object as the second argument. Passing null
+// causes Chrome to return an empty streamId silently.
+// We get the active tab, verify it's injectable, then pass it.
 // ═══════════════════════════════════════════════════════════
 async function startScreenShare(requestingTabId) {
-  // We MUST pass the full Tab object to chooseDesktopMedia, not just the ID.
-  // Without targetTab, Chrome returns null streamId immediately in service worker context.
+  // Resolve the target tab — prefer the requesting tab
   let targetTab = null;
+
   if (requestingTabId) {
-    try { targetTab = await chrome.tabs.get(requestingTabId); } catch {}
+    try { targetTab = await chrome.tabs.get(requestingTabId); } catch { }
   }
+
+  // Fallback: query for the active tab
   if (!targetTab) {
-    // Fallback: use the currently active tab
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     targetTab = tabs?.[0] || null;
   }
 
+  if (!targetTab) {
+    return Promise.reject(new Error('No active tab found for screen capture'));
+  }
+
   return new Promise((resolve, reject) => {
-    // PASSING null instead of targetTab:
-    // This is the fix for RESULT_CODE_KILLED_BAD_MESSAGE crash.
-    // In MV3, passing the full Tab object from tabs.get often triggers IPC violations.
+    // KEY FIX: Pass the actual tab object (not null).
+    // Passing null in MV3 causes chooseDesktopMedia to silently return ''
+    // which looks like a cancellation but is actually a Chrome bug.
     chrome.desktopCapture.chooseDesktopMedia(
       ['screen', 'window', 'tab'],
-      null, 
-      async (streamId) => {
-        if (!streamId) return reject(new Error('Screen share cancelled'));
+      targetTab,
+      (streamId) => {
+        if (!streamId) {
+          // User cancelled — reset state cleanly
+          isSharing = false;
+          setStorage({ isSharing: false });
+          return reject(new Error('Screen share cancelled or permission denied'));
+        }
 
         isSharing = true;
         setStorage({ isSharing: true });
 
-        // Send streamId to the requesting tab's content script
+        // Send streamId to the content script of the requesting tab
         const tabId = requestingTabId || targetTab?.id;
         if (tabId) {
           chrome.tabs.sendMessage(tabId, {
@@ -185,6 +198,9 @@ async function startScreenShare(requestingTabId) {
             targetIds: [...roomUsers]
           }).catch(err => {
             console.error('[BG] Failed to send streamId to content script:', err);
+            // If content script isn't ready, reset sharing state
+            isSharing = false;
+            setStorage({ isSharing: false });
           });
         }
 
@@ -218,7 +234,7 @@ async function joinRoom(rId) {
   const tab = await getActiveTab();
   if (tab && isInjectableUrl(tab.url)) {
     await ensureContentScript(tab.id);
-    chrome.tabs.sendMessage(tab.id, { type: 'BG_SHOW_OVERLAY', roomId }).catch(() => {});
+    chrome.tabs.sendMessage(tab.id, { type: 'BG_SHOW_OVERLAY', roomId }).catch(() => { });
   }
 }
 
@@ -268,8 +284,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       startScreenShare(tabId)
         .then(() => sendResponse({ ok: true }))
-        .catch(e => sendResponse({ ok: false, error: e.message }));
-      return true;
+        .catch(e => {
+          console.error('[BG] startScreenShare error:', e.message);
+          sendResponse({ ok: false, error: e.message });
+        });
+      return true; // keep channel open for async response
     }
 
     case 'CONTENT_STOP_SHARE':
@@ -369,10 +388,9 @@ async function ensureContentScript(tabId) {
     try {
       const r = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
       if (r?.alive) return { ok: true };
-    } catch {}
+    } catch { }
 
     // 3. Inject content script into MAIN FRAME ONLY (frameId: 0)
-    // This prevents "Blocked script execution in about:blank" errors in sandboxed iframes.
     await chrome.scripting.executeScript({
       target: { tabId, frameIds: [0] },
       files: ['content.js']
@@ -388,7 +406,7 @@ async function ensureContentScript(tabId) {
 
 function broadcastTabs(msg) {
   chrome.tabs.query({}, tabs => {
-    tabs.forEach(tab => chrome.tabs.sendMessage(tab.id, msg).catch(() => {}));
+    tabs.forEach(tab => chrome.tabs.sendMessage(tab.id, msg).catch(() => { }));
   });
 }
 
@@ -397,21 +415,21 @@ function broadcastToContentScripts(msg) {
   chrome.tabs.query({}, tabs => {
     tabs.forEach(tab => {
       if (tab.id && isInjectableUrl(tab.url)) {
-        chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
+        chrome.tabs.sendMessage(tab.id, msg).catch(() => { });
       }
     });
   });
 }
 
 function setStorage(data) {
-  chrome.storage.local.set(data).catch(() => {});
+  chrome.storage.local.set(data).catch(() => { });
 }
 
 async function appendChatHistory(entry) {
   const { chatHistory = [] } = await chrome.storage.local.get('chatHistory').catch(() => ({}));
   chatHistory.push(entry);
   if (chatHistory.length > 200) chatHistory.splice(0, chatHistory.length - 200);
-  chrome.storage.local.set({ chatHistory }).catch(() => {});
+  chrome.storage.local.set({ chatHistory }).catch(() => { });
 }
 
 function fmt(secs) {

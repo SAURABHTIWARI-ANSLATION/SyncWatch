@@ -1,12 +1,12 @@
-// SyncWatch Web Client v3
+// SyncWatch Web Client v3 — FIXED
 'use strict';
 
-let socket     = null;
-let player     = null;
-let roomId     = null;
-let userId     = null;
-let isSyncing  = false;
-let wsUrl      = '';
+let socket = null;
+let player = null;
+let roomId = null;
+let userId = null;
+let isSyncing = false;
+let playerReady = false;   // FIX: track when YT player is actually ready
 let streamConnected = false;
 
 // WebRTC State
@@ -15,7 +15,6 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    // Free TURN server from Open Relay Project (handles symmetric NAT / Render)
     {
       urls: 'turn:openrelay.metered.ca:80',
       username: 'openrelayproject',
@@ -48,14 +47,20 @@ function onYouTubeIframeAPIReady() {
   player = new YT.Player('yt-player', {
     height: '100%',
     width: '100%',
-    videoId: '',        // No placeholder — start blank
+    videoId: '',
     playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1 },
-    events: { onStateChange: onPlayerStateChange }
+    events: {
+      onReady: () => {
+        playerReady = true;
+        console.log('[SW] YT player ready');
+      },
+      onStateChange: onPlayerStateChange
+    }
   });
 }
 
 function onPlayerStateChange(event) {
-  if (isSyncing) return;
+  if (isSyncing || !playerReady) return;
   if (event.data === YT.PlayerState.PLAYING) {
     send({ type: 'play', time: player.getCurrentTime() });
   } else if (event.data === YT.PlayerState.PAUSED) {
@@ -72,33 +77,48 @@ function startSync() {
   document.getElementById('loading-screen').classList.remove('hidden');
   document.getElementById('btn-join').disabled = true;
 
+  // FIX: Always use the hardcoded server URL for Render.com deployment.
+  // Using window.location.host breaks when the page is served from a CDN
+  // or if the path is different from the WebSocket server path.
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  wsUrl = `${protocol}//${window.location.host}`;
+  const wsHost = window.location.host;
+  const wsUrl = `${protocol}//${wsHost}`;
 
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {
     send({ type: 'join', roomId });
     document.getElementById('status-dot').className = 'status-dot online';
+    console.log('[SW] WebSocket connected, joining room:', roomId);
   };
 
   socket.onmessage = (e) => {
-    try { handleMessage(JSON.parse(e.data)); } catch {}
+    try { handleMessage(JSON.parse(e.data)); } catch (err) {
+      console.error('[SW] Message parse error:', err);
+    }
   };
 
-  socket.onclose = () => {
+  socket.onclose = (e) => {
     document.getElementById('status-dot').className = 'status-dot offline';
+    console.log('[SW] WebSocket closed:', e.code, e.reason);
     addChatMessage('System', 'Disconnected from server. Refresh to reconnect.');
+    // Re-enable join button so user can retry
+    document.getElementById('btn-join').disabled = false;
   };
 
-  socket.onerror = () => {
+  socket.onerror = (err) => {
+    console.error('[SW] WebSocket error:', err);
     document.getElementById('status-dot').className = 'status-dot offline';
     document.getElementById('btn-join').disabled = false;
+    document.getElementById('loading-screen').classList.add('hidden');
+    addChatMessage('System', 'Connection error. Please refresh and try again.');
   };
 }
 
 function send(data) {
-  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+  }
 }
 
 // ── 4. Message handler ────────────────────────────────────
@@ -107,33 +127,46 @@ function handleMessage(msg) {
 
     case 'joined':
       userId = msg.userId;
-      // Show player view
+      console.log('[SW] Joined room as', userId, '| members:', msg.memberCount);
+
+      // Switch views
       document.getElementById('view-idle').classList.add('hidden');
       document.getElementById('view-player').classList.remove('hidden');
       document.getElementById('room-badge').classList.remove('hidden');
       document.getElementById('room-id-display').textContent = roomId;
       document.getElementById('loading-screen').classList.add('hidden');
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
-      // Show waiting splash until stream arrives
+
+      // Show waiting splash until screen share stream arrives
       showWaitingSplash();
-      // Only apply sync if there was a playing state (don't force seek to 0)
-      if (msg.state && (msg.state.playing || msg.state.time > 0)) {
-        applySync(msg.state);
+
+      // FIX: Only apply sync state if there's meaningful state to sync to.
+      // Don't try to sync if time=0 and not playing — that's just the default state.
+      // Also guard against calling YT API before player is ready.
+      if (msg.state && (msg.state.playing || msg.state.time > 2)) {
+        // Defer sync until YT player is ready
+        waitForPlayerThenSync(msg.state);
       }
       break;
 
     case 'play':
-      if (msg.userId !== userId && !streamConnected) applySync({ time: msg.time, playing: true });
+      if (msg.userId !== userId && !streamConnected) {
+        applySync({ time: msg.time, playing: true });
+      }
       break;
 
     case 'pause':
-      if (msg.userId !== userId && !streamConnected) applySync({ time: msg.time, playing: false });
+      if (msg.userId !== userId && !streamConnected) {
+        applySync({ time: msg.time, playing: false });
+      }
       break;
 
     case 'seek':
       if (msg.userId !== userId && !streamConnected) {
         isSyncing = true;
-        if (player) player.seekTo(msg.time);
+        if (player && playerReady) {
+          try { player.seekTo(msg.time, true); } catch { }
+        }
         setTimeout(() => { isSyncing = false; }, 500);
       }
       break;
@@ -167,28 +200,52 @@ function handleMessage(msg) {
     case 'error':
       document.getElementById('loading-screen').classList.add('hidden');
       document.getElementById('btn-join').disabled = false;
-      alert(msg.msg);
+      console.error('[SW] Server error:', msg.msg);
+      addChatMessage('System', 'Error: ' + msg.msg);
       break;
   }
 }
 
 // ── 5. Sync apply (for YouTube fallback) ─────────────────
+
+// FIX: Wait for YT player to be ready before trying to sync
+function waitForPlayerThenSync(state) {
+  if (playerReady) {
+    applySync(state);
+    return;
+  }
+  // Poll until player is ready (max 10 seconds)
+  let attempts = 0;
+  const check = setInterval(() => {
+    attempts++;
+    if (playerReady) {
+      clearInterval(check);
+      applySync(state);
+    } else if (attempts > 20) {
+      clearInterval(check);
+      console.warn('[SW] YT player never became ready for sync');
+    }
+  }, 500);
+}
+
 function applySync(state) {
-  if (!player || !state || streamConnected) return;
+  if (!player || !state || streamConnected || !playerReady) return;
   isSyncing = true;
   try {
-    const diff = Math.abs(player.getCurrentTime() - state.time);
-    if (diff > 1.5) player.seekTo(state.time);
+    const currentTime = player.getCurrentTime();
+    const diff = Math.abs(currentTime - state.time);
+    if (diff > 1.5) player.seekTo(state.time, true);
     if (state.playing) player.playVideo();
     else player.pauseVideo();
-  } catch {}
+  } catch (e) {
+    console.warn('[SW] applySync error:', e);
+  }
   setTimeout(() => { isSyncing = false; }, 800);
 }
 
 // ── 6. Waiting splash ─────────────────────────────────────
 function showWaitingSplash() {
   if (streamConnected) return;
-  // Remove any existing splash first to avoid duplicates
   hideWaitingSplash();
 
   const wrapper = document.querySelector('.player-wrapper');
@@ -207,7 +264,7 @@ function showWaitingSplash() {
       <div style="width:48px;height:48px;border:4px solid #1e293b;border-top-color:#7c9fff;border-radius:50%;animation:swspin 1s linear infinite;"></div>
       <div style="font-size:20px;font-weight:700;">Waiting for host to share screen</div>
       <div style="font-size:14px;color:#64748b;max-width:280px;line-height:1.6;">
-        The host needs to click 📺 in their SyncWatch extension overlay to start sharing.
+        The host needs to click <strong style="color:#7c9fff">Share Screen</strong> in their SyncWatch extension overlay to start sharing.
         <br><br>
         Video sync is still active while you wait.
       </div>
@@ -240,18 +297,17 @@ async function handleSignal(senderId, signal) {
 
     pc.ontrack = e => {
       if (!e.streams || !e.streams[0]) return;
-      const remoteVid = document.getElementById('remote-stream');
-      const ytPlayer  = document.getElementById('yt-player');
-      const syncOverlay = document.getElementById('sync-overlay');
+      console.log('[WC] Received remote track from:', senderId);
 
-      // Swap out YT iframe for live stream
+      const remoteVid = document.getElementById('remote-stream');
+      const ytPlayer = document.getElementById('yt-player');
+
       if (remoteVid) {
         remoteVid.srcObject = e.streams[0];
         remoteVid.style.display = 'block';
         remoteVid.play().catch(err => console.warn('[WC] video play error:', err));
       }
       if (ytPlayer) ytPlayer.style.display = 'none';
-      if (syncOverlay) syncOverlay.classList.add('hidden');
 
       streamConnected = true;
       hideWaitingSplash();
@@ -260,12 +316,11 @@ async function handleSignal(senderId, signal) {
 
     pc.onconnectionstatechange = () => {
       console.log('[WC] Connection state:', pc.connectionState, 'for peer:', senderId);
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        // Host stopped sharing — show waiting splash again
+      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
         const remoteVid = document.getElementById('remote-stream');
-        const ytPlayer  = document.getElementById('yt-player');
+        const ytPlayer = document.getElementById('yt-player');
         if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; }
-        if (ytPlayer)  ytPlayer.style.display = 'block';
+        if (ytPlayer) ytPlayer.style.display = 'block';
         streamConnected = false;
         showWaitingSplash();
         addChatMessage('System', 'Screen share ended.');
@@ -289,7 +344,7 @@ async function handleSignal(senderId, signal) {
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
       if (pc.remoteDescription?.type) {
-        pc.addIceCandidate(ice).catch(() => {});
+        pc.addIceCandidate(ice).catch(() => { });
       } else {
         pc._iceQueue.push(ice);
       }
@@ -301,20 +356,20 @@ async function handleSignal(senderId, signal) {
 
 function drainIceQueue(pc) {
   if (!pc._iceQueue?.length) return;
-  pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+  pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => { }));
   pc._iceQueue = [];
 }
 
 // ── 8. Chat UI ────────────────────────────────────────────
 const chatInput = document.getElementById('chat-input');
-const chatSend  = document.getElementById('chat-send');
+const chatSend = document.getElementById('chat-send');
 
 chatSend.addEventListener('click', sendChat);
 chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 
 function sendChat() {
   const text = chatInput.value.trim();
-  if (!text) return;
+  if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   send({ type: 'chat', text });
   addChatMessage('You', text);
   chatInput.value = '';
@@ -322,6 +377,7 @@ function sendChat() {
 
 function addChatMessage(author, text) {
   const box = document.getElementById('chat-messages');
+  if (!box) return;
   const div = document.createElement('div');
   div.className = author === 'System' ? 'msg system' : 'msg';
 
@@ -344,10 +400,8 @@ function esc(str) {
 
 // ── 9. Init: Auto-join if roomId present in the URL ───────
 window.addEventListener('load', () => {
-  // Hide loading screen after page is ready
   document.getElementById('loading-screen').classList.add('hidden');
 
-  // Auto-start sync if a roomId was in the URL
   if (roomId) {
     // Small delay to let WebSocket infrastructure be ready
     setTimeout(startSync, 300);

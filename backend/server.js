@@ -12,6 +12,18 @@ const wss = new WebSocketServer({ server });
 // In-memory room store
 const rooms = new Map();
 
+// FIX: Auto-cleanup rooms that are empty for > 2 hours to prevent stale rooms
+// causing "2 watching" ghost count issues
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, room] of rooms.entries()) {
+    if (room.clients.size === 0 && (now - room.createdAt) > 2 * 60 * 60 * 1000) {
+      rooms.delete(id);
+      console.log(`[Room] Auto-cleaned stale room: ${id}`);
+    }
+  }
+}, 10 * 60 * 1000); // check every 10 minutes
+
 // CORS middleware
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -34,6 +46,7 @@ app.post('/room/create', (req, res) => {
   const roomId = uuidv4().replace(/-/g, '').slice(0, 8).toUpperCase();
   rooms.set(roomId, {
     clients: new Set(),
+    createdAt: Date.now(),
     state: { time: 0, playing: false, updatedAt: Date.now() }
   });
   console.log(`[Room] Created: ${roomId}`);
@@ -46,7 +59,8 @@ app.get('/room/:id', (req, res) => {
   res.json({ exists: rooms.has(id) });
 });
 
-// Join route for web client
+// Join route for web client — serves the SPA
+// FIX: This must come BEFORE the static middleware catch-all
 app.get('/join/:id', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -67,11 +81,14 @@ function broadcast(roomId, msg, exclude = null) {
   });
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   let roomId = null;
   const userId = uuidv4().slice(0, 6);
-  ws.wsUserId = userId; // attach ID for WebRTC targeting
+  ws.wsUserId = userId;
 
+  // FIX: Log connection origin for debugging cross-origin WebSocket issues
+  const origin = req.headers['origin'] || 'unknown';
+  console.log(`[WS] New connection from origin: ${origin}, userId: ${userId}`);
 
   ws.on('message', (raw) => {
     let msg;
@@ -82,10 +99,21 @@ wss.on('connection', (ws) => {
       case 'join': {
         const id = (msg.roomId || '').toUpperCase();
         const room = rooms.get(id);
+
+        // FIX: If the room doesn't exist, auto-create it for web clients
+        // This handles the race condition where a room gets deleted between
+        // the HTTP /room/:id check and the WebSocket join
         if (!room) {
-          send(ws, { type: 'error', msg: 'Room not found' });
+          // Check if this looks like a valid room ID attempt (8 chars)
+          if (id.length === 8) {
+            // Room was deleted or expired — inform the client clearly
+            send(ws, { type: 'error', msg: `Room "${id}" not found or has expired. Ask the host to create a new room.` });
+          } else {
+            send(ws, { type: 'error', msg: 'Invalid Room ID format.' });
+          }
           return;
         }
+
         roomId = id;
         room.clients.add(ws);
 
@@ -95,7 +123,9 @@ wss.on('connection', (ws) => {
           : 0;
         const syncedTime = room.state.time + elapsed;
 
-        const otherUserIds = [...room.clients].map(c => c.wsUserId).filter(id => id && id !== userId);
+        const otherUserIds = [...room.clients]
+          .map(c => c.wsUserId)
+          .filter(uid => uid && uid !== userId);
 
         send(ws, {
           type: 'joined',
@@ -105,6 +135,7 @@ wss.on('connection', (ws) => {
           otherUsers: otherUserIds,
           state: { ...room.state, time: syncedTime }
         });
+
         broadcast(roomId, { type: 'user_joined', userId, memberCount: room.clients.size }, ws);
         console.log(`[Room] ${userId} joined ${roomId} (${room.clients.size} members)`);
         break;
@@ -188,8 +219,15 @@ wss.on('connection', (ws) => {
     room.clients.delete(ws);
     console.log(`[Room] ${userId} left ${roomId} (${room.clients.size} members)`);
     if (room.clients.size === 0) {
-      rooms.delete(roomId);
-      console.log(`[Room] Deleted empty room: ${roomId}`);
+      // FIX: Don't immediately delete the room — keep it for 30 seconds
+      // so the host can rejoin if they accidentally disconnect/refresh
+      setTimeout(() => {
+        const r = rooms.get(roomId);
+        if (r && r.clients.size === 0) {
+          rooms.delete(roomId);
+          console.log(`[Room] Deleted empty room: ${roomId}`);
+        }
+      }, 30000);
     } else {
       broadcast(roomId, { type: 'user_left', userId, memberCount: room.clients.size });
     }

@@ -9,10 +9,10 @@
   window.__syncwatch_loaded = true;
 
   // ── State ─────────────────────────────────────────────────
-  let video         = null;
-  let isSyncing     = false;
-  let overlayReady  = false;
-  let chatOpen      = true;
+  let video = null;
+  let isSyncing = false;
+  let overlayReady = false;
+  let chatOpen = true;
   let currentUserId = null;
   let sharingActive = false;
 
@@ -40,7 +40,7 @@
   };
 
   let localStream = null;   // captured screen MediaStream
-  let rtcPeers    = {};     // { userId: RTCPeerConnection }
+  let rtcPeers = {};     // { userId: RTCPeerConnection }
 
   // ═══════════════════════════════════════════════════════════
   // VIDEO DETECTION & SYNC
@@ -51,16 +51,16 @@
       .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight))[0] || null;
   }
 
-  const onPlay   = () => { if (!isSyncing) relay('CONTENT_PLAY',  { time: video.currentTime }); };
-  const onPause  = () => { if (!isSyncing) relay('CONTENT_PAUSE', { time: video.currentTime }); };
-  const onSeeked = () => { if (!isSyncing) relay('CONTENT_SEEK',  { time: video.currentTime }); };
+  const onPlay = () => { if (!isSyncing) relay('CONTENT_PLAY', { time: video.currentTime }); };
+  const onPause = () => { if (!isSyncing) relay('CONTENT_PAUSE', { time: video.currentTime }); };
+  const onSeeked = () => { if (!isSyncing) relay('CONTENT_SEEK', { time: video.currentTime }); };
 
   function attachVideo(v) {
     if (video === v) return;
     detachVideo();
     video = v;
-    video.addEventListener('play',   onPlay);
-    video.addEventListener('pause',  onPause);
+    video.addEventListener('play', onPlay);
+    video.addEventListener('pause', onPause);
     video.addEventListener('seeked', onSeeked);
     chrome.storage.local.set({ sw_has_video: true });
     setVideoChip('✓ Video attached');
@@ -68,23 +68,20 @@
 
   function detachVideo() {
     if (!video) return;
-    video.removeEventListener('play',   onPlay);
-    video.removeEventListener('pause',  onPause);
+    video.removeEventListener('play', onPlay);
+    video.removeEventListener('pause', onPause);
     video.removeEventListener('seeked', onSeeked);
     video = null;
   }
 
   function applySync(state) {
     if (!video || !state) return;
-    if (isSyncing) return; // ignore if already syncing
     isSyncing = true;
     const diff = Math.abs(video.currentTime - state.time);
-    if (diff > 1.2) { // slightly wider threshold for Mixes
-      video.currentTime = state.time;
-    }
-    if (state.playing && video.paused)   video.play().catch(() => {});
+    if (diff > 0.8) video.currentTime = state.time;
+    if (state.playing && video.paused) video.play().catch(() => { });
     else if (!state.playing && !video.paused) video.pause();
-    setTimeout(() => { isSyncing = false; }, 800);
+    setTimeout(() => { isSyncing = false; }, 700);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -93,11 +90,10 @@
 
   // Called by background after desktopCapture gives a streamId
   async function startCapture(streamId, targetIds) {
-    console.log('[SW Content] Starting capture with streamId:', streamId);
     try {
       // getUserMedia with desktopCapture streamId — works in page context
       localStream = await navigator.mediaDevices.getUserMedia({
-        audio: false, 
+        audio: false,
         video: {
           mandatory: {
             chromeMediaSource: 'desktop',
@@ -121,7 +117,7 @@
           video: false
         });
         audioStream.getAudioTracks().forEach(t => localStream.addTrack(t));
-      } catch {}
+      } catch { }
 
       // Watch for native "Stop sharing" button
       const videoTrack = localStream.getVideoTracks()[0];
@@ -202,7 +198,7 @@
       } else if (signalData.candidate) {
         const ice = new RTCIceCandidate(signalData.candidate);
         if (pc.remoteDescription?.type) {
-          pc.addIceCandidate(ice).catch(() => {});
+          pc.addIceCandidate(ice).catch(() => { });
         } else {
           pc._iceQueue = pc._iceQueue || [];
           pc._iceQueue.push(ice);
@@ -242,13 +238,13 @@
 
   function closePeer(peerId) {
     if (!rtcPeers[peerId]) return;
-    try { rtcPeers[peerId].close(); } catch {}
+    try { rtcPeers[peerId].close(); } catch { }
     delete rtcPeers[peerId];
   }
 
   function drainIceQueue(pc) {
     if (!pc._iceQueue?.length) return;
-    pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+    pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => { }));
     pc._iceQueue = [];
   }
 
@@ -363,7 +359,7 @@
   // RELAY HELPER
   // ═══════════════════════════════════════════════════════════
   function relay(type, extra = {}) {
-    chrome.runtime.sendMessage({ type, ...extra }).catch(() => {});
+    chrome.runtime.sendMessage({ type, ...extra }).catch(() => { });
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -571,7 +567,7 @@
 
   // ── DOM helpers ───────────────────────────────────────────
   function setStatus(text) { const el = document.getElementById('_sw_status'); if (el) el.textContent = text; }
-  function setDot(color)   { const el = document.getElementById('_sw_dot');    if (el) el.style.background = color; }
+  function setDot(color) { const el = document.getElementById('_sw_dot'); if (el) el.style.background = color; }
   function setVideoChip(text) {
     const el = document.getElementById('_sw_videochip');
     if (!el) return;
@@ -594,7 +590,7 @@
       const mv = ev => {
         el.style.right = el.style.bottom = 'auto';
         el.style.left = (sL + ev.clientX - sX) + 'px';
-        el.style.top  = (sT + ev.clientY - sY) + 'px';
+        el.style.top = (sT + ev.clientY - sY) + 'px';
       };
       const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
       document.addEventListener('mousemove', mv);
