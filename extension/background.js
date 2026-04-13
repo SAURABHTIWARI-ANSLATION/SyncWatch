@@ -21,12 +21,12 @@ let syncTimer = null;
 // ═══════════════════════════════════════════════════════════
 function wsConnect() {
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
-  console.log('[BG] Connecting WS…');
+  console.log('[BG] Connecting WS to:', WS_URL);
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
     connected = true;
-    console.log('[BG] WS open');
+    console.log('[BG] WS open, joining room:', roomId);
     wsSend({ type: 'join', roomId });
     clearInterval(heartbeatTimer);
     clearInterval(syncTimer);
@@ -37,22 +37,28 @@ function wsConnect() {
   };
 
   ws.onmessage = (e) => {
-    try { handleServerMsg(JSON.parse(e.data)); } catch { }
+    try { handleServerMsg(JSON.parse(e.data)); } catch (err) {
+      console.error('[BG] Error parsing server message:', err);
+    }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     connected = false;
     clearInterval(heartbeatTimer);
     clearInterval(syncTimer);
-    console.log('[BG] WS closed');
+    console.log('[BG] WS closed, code:', event.code, 'reason:', event.reason || 'none');
     setStorage({ wsConnected: false });
     broadcastTabs({ type: 'BG_STATUS', connected: false });
     if (roomId) {
+      console.log('[BG] Will attempt to reconnect in 3 seconds...');
       wsReconnectTimer = setTimeout(wsConnect, 3000);
     }
   };
 
-  ws.onerror = (e) => console.error('[BG] WS error', e);
+  ws.onerror = (e) => {
+    console.error('[BG] WS error:', e);
+    console.error('[BG] Check if server is running at:', WS_URL);
+  };
 }
 
 function wsSend(data) {
@@ -236,18 +242,45 @@ function stopScreenShare() {
 // ROOM OPERATIONS
 // ═══════════════════════════════════════════════════════════
 async function joinRoom(rId) {
+  console.log('[BG] Joining room:', rId);
   wsDisconnect();
   stopScreenShare();
 
   roomId = rId.toUpperCase();
   await chrome.storage.local.set({ sw_room: roomId, chatHistory: [], connected: false, isSharing: false });
 
+  console.log('[BG] Connecting to WS and showing overlay');
   wsConnect();
 
   const tab = await getActiveTab();
   if (tab && isInjectableUrl(tab.url)) {
-    await ensureContentScript(tab.id);
-    chrome.tabs.sendMessage(tab.id, { type: 'BG_SHOW_OVERLAY', roomId }).catch(() => { });
+    console.log('[BG] Tab found, ensuring content script is loaded:', tab.id);
+    const contentScriptCheck = await ensureContentScript(tab.id);
+    console.log('[BG] Content script check result:', contentScriptCheck);
+    
+    // Try to send message, retry once if fails
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'BG_SHOW_OVERLAY', roomId });
+      console.log('[BG] Overlay message sent successfully');
+    } catch (err) {
+      console.warn('[BG] First overlay message failed, retrying after reload:', err);
+      // Content script might not be ready, try injecting it
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content.js']
+        });
+        console.log('[BG] Content script re-injected');
+        // Wait a moment for script to initialize
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await chrome.tabs.sendMessage(tab.id, { type: 'BG_SHOW_OVERLAY', roomId });
+        console.log('[BG] Overlay message sent after re-injection');
+      } catch (retryErr) {
+        console.error('[BG] Failed to send overlay even after re-injection:', retryErr);
+      }
+    }
+  } else {
+    console.warn('[BG] No valid tab found for overlay injection');
   }
 }
 

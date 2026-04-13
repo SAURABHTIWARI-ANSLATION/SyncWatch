@@ -769,14 +769,19 @@
   // ═══════════════════════════════════════════════════════════
   // AUTO-INIT
   // ═══════════════════════════════════════════════════════════
+  console.log('[SW Content] Auto-initializing overlay...');
   injectOverlay();
 
   chrome.storage.local.get(['sw_room', 'wsConnected', 'chatHistory', 'isSharing'], (data) => {
+    console.log('[SW Content] Storage check:', data);
     if (data.sw_room && data.wsConnected) {
+      console.log('[SW Content] Restoring room:', data.sw_room);
       showOverlay(data.sw_room);
       setDot('#4ade80');
       sharingActive = !!data.isSharing;
       updateShareBtn();
+    } else {
+      console.log('[SW Content] No active room to restore');
     }
   });
 
