@@ -1,4 +1,4 @@
-// SyncWatch Web Client v2
+// SyncWatch Web Client v3
 'use strict';
 
 let socket     = null;
@@ -14,7 +14,23 @@ let rtcPeers = {};
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    // Free TURN server from Open Relay Project (handles symmetric NAT / Render)
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
   ]
 };
 
@@ -32,7 +48,7 @@ function onYouTubeIframeAPIReady() {
   player = new YT.Player('yt-player', {
     height: '100%',
     width: '100%',
-    videoId: '',          // No placeholder — start blank
+    videoId: '',        // No placeholder — start blank
     playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1 },
     events: { onStateChange: onPlayerStateChange }
   });
@@ -54,6 +70,7 @@ function startSync() {
   if (!roomId) return alert('No Room ID found!');
 
   document.getElementById('loading-screen').classList.remove('hidden');
+  document.getElementById('btn-join').disabled = true;
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   wsUrl = `${protocol}//${window.location.host}`;
@@ -71,11 +88,12 @@ function startSync() {
 
   socket.onclose = () => {
     document.getElementById('status-dot').className = 'status-dot offline';
-    addChatMessage('System', 'Disconnected from server');
+    addChatMessage('System', 'Disconnected from server. Refresh to reconnect.');
   };
 
   socket.onerror = () => {
     document.getElementById('status-dot').className = 'status-dot offline';
+    document.getElementById('btn-join').disabled = false;
   };
 }
 
@@ -98,7 +116,10 @@ function handleMessage(msg) {
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       // Show waiting splash until stream arrives
       showWaitingSplash();
-      applySync(msg.state);
+      // Only apply sync if there was a playing state (don't force seek to 0)
+      if (msg.state && (msg.state.playing || msg.state.time > 0)) {
+        applySync(msg.state);
+      }
       break;
 
     case 'play':
@@ -144,8 +165,9 @@ function handleMessage(msg) {
       break;
 
     case 'error':
+      document.getElementById('loading-screen').classList.add('hidden');
+      document.getElementById('btn-join').disabled = false;
       alert(msg.msg);
-      window.location.href = '/';
       break;
   }
 }
@@ -166,8 +188,11 @@ function applySync(state) {
 // ── 6. Waiting splash ─────────────────────────────────────
 function showWaitingSplash() {
   if (streamConnected) return;
+  // Remove any existing splash first to avoid duplicates
+  hideWaitingSplash();
+
   const wrapper = document.querySelector('.player-wrapper');
-  if (!wrapper || document.getElementById('sw-waiting')) return;
+  if (!wrapper) return;
 
   const splash = document.createElement('div');
   splash.id = 'sw-waiting';
@@ -175,7 +200,7 @@ function showWaitingSplash() {
     <div style="
       position:absolute;inset:0;display:flex;flex-direction:column;
       align-items:center;justify-content:center;gap:16px;
-      background:rgba(5,8,15,0.92);z-index:5;
+      background:rgba(5,8,15,0.95);z-index:20;
       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
       color:#f8fafc;text-align:center;padding:32px;
     ">
@@ -209,18 +234,24 @@ async function handleSignal(senderId, signal) {
       if (e.candidate) send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
     };
 
+    pc.oniceconnectionstatechange = () => {
+      console.log('[WC] ICE state:', pc.iceConnectionState, 'for peer:', senderId);
+    };
+
     pc.ontrack = e => {
-      if (!e.streams[0]) return;
+      if (!e.streams || !e.streams[0]) return;
       const remoteVid = document.getElementById('remote-stream');
       const ytPlayer  = document.getElementById('yt-player');
+      const syncOverlay = document.getElementById('sync-overlay');
 
       // Swap out YT iframe for live stream
       if (remoteVid) {
         remoteVid.srcObject = e.streams[0];
         remoteVid.style.display = 'block';
-        remoteVid.play().catch(() => {});
+        remoteVid.play().catch(err => console.warn('[WC] video play error:', err));
       }
       if (ytPlayer) ytPlayer.style.display = 'none';
+      if (syncOverlay) syncOverlay.classList.add('hidden');
 
       streamConnected = true;
       hideWaitingSplash();
@@ -228,15 +259,16 @@ async function handleSignal(senderId, signal) {
     };
 
     pc.onconnectionstatechange = () => {
+      console.log('[WC] Connection state:', pc.connectionState, 'for peer:', senderId);
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        // Host stopped sharing — show YT fallback again
+        // Host stopped sharing — show waiting splash again
         const remoteVid = document.getElementById('remote-stream');
         const ytPlayer  = document.getElementById('yt-player');
         if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; }
         if (ytPlayer)  ytPlayer.style.display = 'block';
         streamConnected = false;
         showWaitingSplash();
-        addChatMessage('System', 'Screen share ended, reverting to sync mode');
+        addChatMessage('System', 'Screen share ended.');
         delete rtcPeers[senderId];
       }
     };
@@ -310,7 +342,14 @@ function esc(str) {
   );
 }
 
-// ── 9. Init ───────────────────────────────────────────────
+// ── 9. Init: Auto-join if roomId present in the URL ───────
 window.addEventListener('load', () => {
+  // Hide loading screen after page is ready
   document.getElementById('loading-screen').classList.add('hidden');
+
+  // Auto-start sync if a roomId was in the URL
+  if (roomId) {
+    // Small delay to let WebSocket infrastructure be ready
+    setTimeout(startSync, 300);
+  }
 });
