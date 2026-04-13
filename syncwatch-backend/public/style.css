@@ -135,7 +135,7 @@ body {
   display: flex; flex-direction: column; gap: 8px;
 }
 
-.msg { font-size: 14px; line-height: 1.4; word-break: break-all; }
+.msg { font-size: 14px; line-height: 1.4; overflow-wrap: break-word; word-break: break-word; }
 .msg.system { color: var(--text-muted); font-style: italic; font-size: 12px; text-align: center; margin: 10px 0; }
 .msg span.author { color: var(--accent); font-weight: 700; margin-right: 6px; }
 

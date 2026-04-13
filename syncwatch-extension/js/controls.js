@@ -168,6 +168,12 @@ function addMsg(type, text, author) {
     div.appendChild(t);
   }
   box.appendChild(div);
+  
+  // Keep maximum 100 messages
+  while (box.children.length > 100) {
+    box.removeChild(box.firstChild);
+  }
+
   box.scrollTop = box.scrollHeight;
 }
 

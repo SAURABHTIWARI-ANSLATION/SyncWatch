@@ -467,6 +467,12 @@ function addChatMessage(author, text) {
     div.textContent = text;
   }
   box.appendChild(div);
+
+  // Keep maximum of 100 messages to prevent scrolling/DOM lag:
+  while (box.children.length > 100) {
+    box.removeChild(box.firstChild);
+  }
+
   box.scrollTop = box.scrollHeight;
 }
 
