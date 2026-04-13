@@ -372,7 +372,7 @@
     const style = document.createElement('style');
     style.textContent = `
       #_sw_root {
-        position:fixed; bottom:24px; right:24px; width:280px;
+        position:fixed; bottom:24px; right:24px; width:360px;
         z-index:2147483647;
         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
         font-size:13px; color:#e2e8f0;
@@ -385,8 +385,8 @@
         box-shadow:0 16px 48px rgba(0,0,0,0.7), 0 0 0 .5px rgba(255,255,255,.04) inset;
       }
       #_sw_titlebar {
-        display:flex; align-items:center; gap:7px;
-        padding:9px 11px; cursor:move;
+        display:flex; align-items:center; gap:6px;
+        padding:8px 10px; cursor:move;
         border-bottom:1px solid rgba(255,255,255,0.07); user-select:none;
       }
       #_sw_dot { width:8px; height:8px; border-radius:50%; background:#475569; flex-shrink:0; transition:background .4s; }
@@ -395,7 +395,8 @@
       ._sw_tbtn {
         background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08);
         color:#94a3b8; cursor:pointer; padding:3px 8px; border-radius:6px;
-        font-size:11px; line-height:1.5; flex-shrink:0; transition:background .2s;
+        font-size:10px; font-weight:600; line-height:1.5; flex-shrink:0; transition:background .2s;
+        white-space:nowrap; letter-spacing:0.2px;
       }
       ._sw_tbtn:hover { background:rgba(255,255,255,.13); color:#e2e8f0; }
       ._sw_tbtn.active { background:rgba(248,113,113,.15); border-color:rgba(248,113,113,.3); color:#f87171; }
@@ -447,20 +448,20 @@
           <span id="_sw_dot"></span>
           <span id="_sw_brand">SyncWatch</span>
           <span id="_sw_status">Idle</span>
-          <button class="_sw_tbtn" id="_sw_share_btn" title="Share Screen">📺</button>
-          <button class="_sw_tbtn" id="_sw_toggle" title="Toggle chat">💬</button>
-          <button class="_sw_tbtn" id="_sw_close_btn" title="Hide overlay">✕</button>
+          <button class="_sw_tbtn" id="_sw_share_btn" title="Share Screen">Share Screen</button>
+          <button class="_sw_tbtn" id="_sw_toggle" title="Toggle chat">Chat</button>
+          <button class="_sw_tbtn" id="_sw_close_btn" title="Hide overlay">Hide</button>
         </div>
-        <div id="_sw_videochip">Searching for video…</div>
+        <div id="_sw_videochip">Searching for video...</div>
         <div id="_sw_body">
           <div id="_sw_msgs"></div>
           <div id="_sw_inputrow">
-            <input id="_sw_input" placeholder="Type a message…" autocomplete="off" maxlength="300" />
-            <button id="_sw_sendbtn" title="Send">↑</button>
+            <input id="_sw_input" placeholder="Type a message..." autocomplete="off" maxlength="300" />
+            <button id="_sw_sendbtn" title="Send">Send</button>
           </div>
         </div>
         <div id="_sw_collapsed">
-          <div id="_sw_expand_hint">▲ Click to expand chat</div>
+          <div id="_sw_expand_hint">Click to expand chat</div>
         </div>
       </div>
     `;
@@ -515,12 +516,12 @@
     const btn = document.getElementById('_sw_share_btn');
     if (!btn) return;
     if (sharingActive) {
-      btn.textContent = '🔴';
+      btn.textContent = 'Stop Sharing';
       btn.title = 'Stop Screen Share';
       btn.classList.add('active');
     } else {
-      btn.textContent = '📺';
-      btn.title = 'Share Screen';
+      btn.textContent = 'Share Screen';
+      btn.title = 'Share your screen with guests';
       btn.classList.remove('active');
     }
   }

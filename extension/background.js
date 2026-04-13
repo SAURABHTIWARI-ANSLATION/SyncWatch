@@ -150,20 +150,33 @@ function handleServerMsg(msg) {
 // SCREEN SHARE — desktopCapture picker runs in BG,
 // streamId is sent to content.js which owns WebRTC
 // ═══════════════════════════════════════════════════════════
-function startScreenShare(requestingTabId) {
+async function startScreenShare(requestingTabId) {
+  // We MUST pass the full Tab object to chooseDesktopMedia, not just the ID.
+  // Without targetTab, Chrome returns null streamId immediately in service worker context.
+  let targetTab = null;
+  if (requestingTabId) {
+    try { targetTab = await chrome.tabs.get(requestingTabId); } catch {}
+  }
+  if (!targetTab) {
+    // Fallback: use the currently active tab
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    targetTab = tabs?.[0] || null;
+  }
+
   return new Promise((resolve, reject) => {
-    // NOTE: do NOT pass targetTab (second param) — causes silent failures on some Chrome versions
     chrome.desktopCapture.chooseDesktopMedia(
       ['screen', 'window', 'tab'],
-      (streamId) => {
-        if (!streamId) return reject(new Error('User cancelled or permission denied'));
+      targetTab,  // Required: full Tab object so Chrome can show the picker
+      async (streamId) => {
+        if (!streamId) return reject(new Error('Screen share cancelled'));
 
         isSharing = true;
         setStorage({ isSharing: true });
 
-        // Send streamId to the requesting tab's content script so it can call getUserMedia
-        if (requestingTabId) {
-          chrome.tabs.sendMessage(requestingTabId, {
+        // Send streamId to the requesting tab's content script
+        const tabId = requestingTabId || targetTab?.id;
+        if (tabId) {
+          chrome.tabs.sendMessage(tabId, {
             type: 'BG_START_CAPTURE',
             streamId,
             targetIds: [...roomUsers]

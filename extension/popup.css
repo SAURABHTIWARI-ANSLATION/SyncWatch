@@ -13,7 +13,6 @@
   --dimmer:       #334155;
   --accent:       #7c9fff;
   --accent-dim:   rgba(124,159,255,0.13);
-  --accent-glow:  rgba(124,159,255,0.08);
   --green:        #4ade80;
   --red:          #f87171;
   --red-dim:      rgba(248,113,113,0.12);
@@ -23,7 +22,7 @@
 
 /* ── Body ── */
 body {
-  width: 250px;
+  width: 280px;
   min-height: 100px;
   background: var(--bg);
   color: var(--text);
@@ -37,7 +36,7 @@ body {
   padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 /* ── Header ── */
@@ -50,14 +49,14 @@ body {
 }
 
 .logo-box {
-  width: 34px; height: 34px;
+  width: 36px; height: 36px;
   border-radius: 9px;
   background: var(--accent);
   color: #05080f;
-  font-size: 16px; font-weight: 900;
+  font-size: 11px; font-weight: 900;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
-  letter-spacing: -1px;
+  letter-spacing: 0.5px;
 }
 
 .header-text { flex: 1; }
@@ -71,8 +70,18 @@ h1 { font-size: 14px; font-weight: 700; color: #fff; line-height: 1.2; }
   flex-shrink: 0;
   transition: background 0.4s;
 }
-.server-dot.online  { background: var(--green); }
+.server-dot.online  { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .server-dot.offline { background: var(--red); }
+
+/* ── Section label ── */
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: -4px;
+}
 
 /* ── Buttons ── */
 .btn {
@@ -89,11 +98,10 @@ h1 { font-size: 14px; font-weight: 700; color: #fff; line-height: 1.2; }
   cursor: pointer;
   transition: all 0.18s;
   outline: none;
+  letter-spacing: 0.2px;
 }
 .btn:active { transform: scale(0.98); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-
-.btn-icon { font-size: 16px; font-weight: 300; line-height: 1; }
 
 .btn-primary {
   background: var(--accent);
@@ -118,16 +126,32 @@ h1 { font-size: 14px; font-weight: 700; color: #fff; line-height: 1.2; }
 }
 .btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.2); }
 
-.btn-share-invite {
-  margin-top: 10px;
-  background: rgba(124, 159, 255, 0.08); /* slight accent background */
+.btn-invite {
+  margin-top: 8px;
+  background: rgba(124, 159, 255, 0.08);
   color: var(--accent);
-  border-color: rgba(124, 159, 255, 0.2);
+  border: 1px solid rgba(124, 159, 255, 0.2);
 }
-.btn-share-invite:hover:not(:disabled) {
-  background: rgba(124, 159, 255, 0.15);
+.btn-invite:hover:not(:disabled) {
+  background: rgba(124, 159, 255, 0.16);
   border-color: rgba(124, 159, 255, 0.4);
 }
+
+/* Inline text button (e.g., Copy) */
+.text-btn {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.text-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
 
 /* ── Divider ── */
 .divider {
@@ -135,6 +159,7 @@ h1 { font-size: 14px; font-weight: 700; color: #fff; line-height: 1.2; }
   text-align: center;
   font-size: 10px;
   color: var(--dimmer);
+  margin: 2px 0;
 }
 .divider::before, .divider::after {
   content: '';
@@ -156,21 +181,22 @@ h1 { font-size: 14px; font-weight: 700; color: #fff; line-height: 1.2; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 8px 10px;
+  padding: 9px 10px;
   color: var(--text);
   font-size: 12px;
   font-family: 'SF Mono', 'Fira Code', monospace;
-  letter-spacing: 1px;
+  letter-spacing: 2px;
   outline: none;
   transition: border-color 0.2s, background 0.2s;
+  text-transform: uppercase;
 }
 .input:focus {
   border-color: rgba(124,159,255,0.5);
   background: var(--surface2);
 }
-.input::placeholder { color: var(--dimmer); letter-spacing: 0; font-family: inherit; }
+.input::placeholder { color: var(--dimmer); letter-spacing: 0; font-family: inherit; text-transform: none; }
 
-/* ── Connected view ── */
+/* ── Room card ── */
 .room-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -192,26 +218,12 @@ h1 { font-size: 14px; font-weight: 700; color: #fff; line-height: 1.2; }
 code {
   flex: 1;
   font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: 3px;
   color: var(--accent);
   line-height: 1;
 }
-.icon-btn {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid var(--border);
-  color: var(--muted);
-  cursor: pointer;
-  padding: 5px 7px;
-  border-radius: 7px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-.icon-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
 
 /* ── Info row ── */
 .info-row {
@@ -234,18 +246,23 @@ code {
 .info-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
-  background: var(--green);
   flex-shrink: 0;
 }
-.info-dot.video-dot { background: var(--dimmer); }
-.info-dot.video-dot.found { background: var(--accent); }
+.video-dot { background: var(--dimmer); }
 
-/* ── Members ── */
-.members-strip {
+/* ── Screen share hint ── */
+.share-hint {
+  background: rgba(124, 159, 255, 0.06);
+  border: 1px solid rgba(124, 159, 255, 0.15);
+  border-radius: var(--radius);
+  padding: 9px 11px;
   font-size: 11px;
-  color: var(--dimmer);
-  text-align: center;
-  padding: 4px 0 2px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.share-hint strong {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* ── Flash ── */
@@ -255,6 +272,7 @@ code {
   text-align: center;
   color: var(--muted);
   transition: color 0.2s;
+  line-height: 1.5;
 }
 .flash.ok  { color: var(--green); }
 .flash.err { color: var(--red); }
@@ -270,7 +288,6 @@ code {
   font-size: 10px;
   color: var(--muted);
 }
-
 
 /* ── Utility ── */
 .hidden { display: none !important; }

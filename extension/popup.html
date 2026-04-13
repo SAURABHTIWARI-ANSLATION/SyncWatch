@@ -10,28 +10,33 @@
 
     <!-- Header -->
     <div class="header">
-      <div class="logo-box">S</div>
+      <div class="logo-box">SW</div>
       <div class="header-text">
         <h1>SyncWatch</h1>
-        <p class="sub">Real-time video sync</p>
+        <p class="sub">Real-time video sync &amp; screen share</p>
       </div>
       <div class="server-dot" id="server-dot" title="Server status"></div>
     </div>
 
-    <!-- Tab warning (shown when on chrome:// / new tab page) -->
+    <!-- Tab warning -->
     <div class="tab-warn hidden" id="tab-warning"></div>
 
     <!-- IDLE VIEW -->
     <div id="view-idle">
+
+      <div class="section-label">Start a new session</div>
       <button class="btn btn-primary" id="btn-create">
-        <span class="btn-icon">+</span> Create Room
+        Create Room
       </button>
-      <div class="divider"><span>or join existing room</span></div>
+
+      <div class="divider"><span>or join an existing room</span></div>
+
+      <div class="section-label">Enter Room ID to join</div>
       <div class="join-row">
         <input
           class="input"
           id="inp-room"
-          placeholder="Room ID (e.g. AB12CD34)"
+          placeholder="e.g. AB12CD34"
           maxlength="8"
           autocomplete="off"
           spellcheck="false"
@@ -42,19 +47,15 @@
 
     <!-- CONNECTED VIEW -->
     <div id="view-connected" class="hidden">
+
       <div class="room-card">
-        <div class="room-card-label">Active Room</div>
+        <div class="room-card-label">Active Room ID</div>
         <div class="room-card-inner">
           <code id="room-code">—</code>
-          <button class="icon-btn" id="btn-copy" title="Copy room ID">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
-              <path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-            </svg>
-          </button>
+          <button class="text-btn" id="btn-copy">Copy</button>
         </div>
-        <button class="btn btn-ghost btn-share-invite" id="btn-share">
-          Share Invite 🔗
+        <button class="btn btn-invite" id="btn-share">
+          Copy Invite Link for Guests
         </button>
       </div>
 
@@ -65,8 +66,14 @@
         </div>
         <div class="info-item">
           <div class="info-dot video-dot"></div>
-          <span id="video-label">Searching…</span>
+          <span id="video-label">Searching for video...</span>
         </div>
+      </div>
+
+      <div class="share-hint">
+        To share your screen, open a video page and click
+        <strong>Screen Share</strong> in the SyncWatch overlay
+        (bottom-right corner).
       </div>
 
       <button class="btn btn-danger" id="btn-leave">Leave Room</button>
@@ -76,9 +83,8 @@
     <div class="flash" id="flash"></div>
 
     <!-- Footer -->
-    <p class="footer-hint">Server: <code class="server-url">Production (Render)</code></p>
+    <p class="footer-hint">Connected to <code class="server-url">syncwatch on Render</code></p>
   </div>
   <script src="popup.js"></script>
 </body>
 </html>
-
