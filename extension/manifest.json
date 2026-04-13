@@ -11,6 +11,14 @@
     "desktopCapture"
   ],
   "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
   "background": {
     "service_worker": "background.js"
   },

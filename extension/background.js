@@ -395,9 +395,9 @@ async function ensureContentScript(tabId) {
       if (r?.alive) return { ok: true };
     } catch { }
 
-    // 3. Inject content script into MAIN FRAME ONLY (frameId: 0)
+    // 3. Inject content script into ALL frames to catch videos in iframes
     await chrome.scripting.executeScript({
-      target: { tabId, frameIds: [0] },
+      target: { tabId, allFrames: true },
       files: ['content.js']
     });
 

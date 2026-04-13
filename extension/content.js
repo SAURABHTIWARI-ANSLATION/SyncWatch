@@ -1,21 +1,27 @@
-// SyncWatch Content Script v3
+// SyncWatch Content Script v3.2
 // Responsibilities:
 //   1. DOM overlay UI
 //   2. Video detection & sync
 //   3. WebRTC peer connections (screen share HOST side) — moved here from offscreen
 //   ALL networking delegated to background.js via chrome.runtime.sendMessage.
+"use strict";
+
 (function () {
-  if (window.top !== window) {
-    console.log("[SW] Inside iframe → skipping injection");
+  // 🚫 Ignore sandboxed / useless frames
+  try {
+    if (window.location.href === "about:blank" || window.location.href.startsWith("chrome:")) return;
+  } catch (e) {
     return;
   }
+
   if (window.__syncwatch_loaded) return;
   window.__syncwatch_loaded = true;
+  console.log("[SW] Injected in frame:", window.location.href);
 
   // ── State ─────────────────────────────────────────────────
   let video = null;
   let isSyncing = false;
-  let overlayReady = false;
+  let overlayReady = false; // Note: UI only renders in top frame
   let chatOpen = true;
   let currentUserId = null;
   let sharingActive = false;
@@ -50,9 +56,10 @@
   // VIDEO DETECTION & SYNC
   // ═══════════════════════════════════════════════════════════
   function findVideo() {
-    return Array.from(document.querySelectorAll('video'))
-      .filter(v => v.offsetWidth > 0 && v.offsetHeight > 0)
-      .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight))[0] || null;
+    const vids = Array.from(document.querySelectorAll('video'));
+    if (!vids.length) return null;
+    // Sort by visible size (width * height) descending
+    return vids.sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight))[0];
   }
 
   const onPlay = () => { if (!isSyncing) relay('CONTENT_PLAY', { time: video.currentTime }); };
@@ -369,7 +376,12 @@
   // ═══════════════════════════════════════════════════════════
   // OVERLAY UI
   // ═══════════════════════════════════════════════════════════
-  function injectOverlay() {
+  function injectOverlay(roomId) {
+    // ⚡ UI logic: Only render overlay in TOP frame
+    if (window !== window.top) {
+      console.log("[SW] Iframe detected → skipping UI render");
+      return;
+    }
     if (overlayReady) return;
     overlayReady = true;
 
