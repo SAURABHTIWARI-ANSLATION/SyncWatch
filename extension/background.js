@@ -338,7 +338,14 @@ async function relayToContentScript(payload, sender, sendResponse) {
 // HELPERS
 // ═══════════════════════════════════════════════════════════
 function isInjectableUrl(url) {
-  return url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('file://'));
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'chrome:' || u.protocol === 'about:' || u.protocol === 'chrome-extension:') return false;
+    return ['http:', 'https:', 'file:'].includes(u.protocol);
+  } catch {
+    return false;
+  }
 }
 
 async function getActiveTab() {
@@ -351,14 +358,27 @@ async function getActiveTab() {
 
 async function ensureContentScript(tabId) {
   try {
-    const r = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
-    if (r?.alive) return { ok: true };
-  } catch {}
-  try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    // 1. Check if tab still exists and has an injectable URL
+    const tab = await chrome.tabs.get(tabId);
+    if (!isInjectableUrl(tab.url)) return { ok: false, error: 'Non-injectable URL: ' + tab.url };
+
+    // 2. Try to ping existing content script
+    try {
+      const r = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
+      if (r?.alive) return { ok: true };
+    } catch {}
+
+    // 3. Inject content script into MAIN FRAME ONLY (frameId: 0)
+    // This prevents "Blocked script execution in about:blank" errors in sandboxed iframes.
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      files: ['content.js']
+    });
+
     await sleep(400);
     return { ok: true };
   } catch (e) {
+    console.error('[BG] Injection failed:', e.message);
     return { ok: false, error: e.message };
   }
 }

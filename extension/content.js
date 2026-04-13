@@ -128,7 +128,7 @@
         };
       }
 
-      addChat('System', '📺 Screen captured! Connecting to guests…');
+      addChat('System', 'Screen captured! Connecting to guests…');
 
       // Create offers for all existing room members
       for (const id of (targetIds || [])) {
@@ -295,7 +295,7 @@
       case 'BG_SHARE_STARTED':
         sharingActive = true;
         updateShareBtn();
-        addChat('System', '📺 Screen sharing started — guests can see your screen');
+        addChat('System', 'Screen sharing started — guests can see your screen');
         return false;
 
       case 'BG_SHARE_STOPPED':

@@ -128,7 +128,7 @@ $('btn-create').addEventListener('click', async () => {
     flash('Error: ' + e.message, 'err');
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<span class="btn-icon">+</span> Create Room';
+    btn.textContent = 'Create New Room';
   }
 });
 
@@ -188,13 +188,13 @@ $('btn-copy').addEventListener('click', () => {
 $('btn-share').addEventListener('click', () => {
   if (!activeRoomId) return;
   const webLink = `https://syncwatch-o4za.onrender.com/join/${activeRoomId}`;
-  const message = `🎬 Let's watch together!\n\nJoin my SyncWatch room:\n${webLink}\n\n(No extension required for guests)`;
+  const message = `SyncWatch - Let's watch together!\n\nJoin my room:\n${webLink}\n\n(No extension required for guests)`;
 
   navigator.clipboard.writeText(message)
     .then(() => {
       const btn = $('btn-share');
       const orig = btn.innerHTML;
-      btn.textContent = 'Invite Copied! ✅';
+      btn.textContent = 'Invite Link Copied';
       btn.style.color = '#4ade80';
       btn.style.borderColor = '#4ade80';
       setTimeout(() => { btn.innerHTML = orig; btn.style.color = btn.style.borderColor = ''; }, 2500);
@@ -235,7 +235,7 @@ async function pollStatus() {
 
     // Show sharing indicator
     if (status.isSharing) {
-      if (vLabel) vLabel.textContent = '📺 Sharing screen';
+      if (vLabel) vLabel.textContent = 'Active: Sharing Screen';
     }
   } catch {}
 }
