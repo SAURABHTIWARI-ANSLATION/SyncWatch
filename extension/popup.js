@@ -1,7 +1,8 @@
 // SyncWatch Popup
 'use strict';
 
-const API = 'http://localhost:3000';
+const API = 'https://syncwatch-o4za.onrender.com';
+
 let activeRoomId = null;
 
 const $ = id => document.getElementById(id);

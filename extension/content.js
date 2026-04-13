@@ -4,8 +4,9 @@
   if (window.__syncwatch_loaded) return;
   window.__syncwatch_loaded = true;
 
-  const WS_URL  = 'ws://localhost:3000';
-  const API_URL = 'http://localhost:3000';
+  const WS_URL  = 'wss://syncwatch-o4za.onrender.com';
+  const API_URL = 'https://syncwatch-o4za.onrender.com';
+
 
 
   // ── State ────────────────────────────────────────────────
