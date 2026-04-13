@@ -7,8 +7,9 @@ let isSyncing = false;
 let wsUrl = '';
 
 // 1. Extract Room ID from URL
-const pathParts = window.location.pathname.split('/');
-roomId = pathParts[pathParts.length - 1].toUpperCase();
+const cleanPath = window.location.pathname.replace(/\/$/, '');
+const pathParts = cleanPath.split('/');
+roomId = pathParts[pathParts.length - 1].toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 if (roomId) {
   document.getElementById('inp-room-id').value = roomId;
