@@ -1,0 +1,287 @@
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Variables ── */
+:root {
+  --bg:           #080c17;
+  --surface:      #0f1626;
+  --surface2:     #141d30;
+  --border:       rgba(255,255,255,0.08);
+  --border-hover: rgba(255,255,255,0.15);
+  --text:         #e2e8f0;
+  --muted:        #64748b;
+  --dimmer:       #334155;
+  --accent:       #7c9fff;
+  --accent-dim:   rgba(124,159,255,0.13);
+  --accent-glow:  rgba(124,159,255,0.08);
+  --green:        #4ade80;
+  --red:          #f87171;
+  --red-dim:      rgba(248,113,113,0.12);
+  --radius:       10px;
+  --radius-lg:    14px;
+}
+
+/* ── Body ── */
+body {
+  width: 250px;
+  min-height: 100px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.logo-box {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #05080f;
+  font-size: 16px; font-weight: 900;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  letter-spacing: -1px;
+}
+
+.header-text { flex: 1; }
+h1 { font-size: 14px; font-weight: 700; color: #fff; line-height: 1.2; }
+.sub { font-size: 10px; color: var(--muted); margin-top: 1px; }
+
+.server-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--dimmer);
+  flex-shrink: 0;
+  transition: background 0.4s;
+}
+.server-dot.online  { background: var(--green); }
+.server-dot.offline { background: var(--red); }
+
+/* ── Buttons ── */
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+  outline: none;
+}
+.btn:active { transform: scale(0.98); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.btn-icon { font-size: 16px; font-weight: 300; line-height: 1; }
+
+.btn-primary {
+  background: var(--accent);
+  color: #06090f;
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.12); }
+
+.btn-ghost {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  width: auto;
+  padding: 9px 14px;
+  flex-shrink: 0;
+}
+.btn-ghost:hover:not(:disabled) { background: var(--surface2); border-color: var(--border-hover); }
+
+.btn-danger {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid rgba(248,113,113,0.15);
+}
+.btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.2); }
+
+.btn-share-invite {
+  margin-top: 10px;
+  background: rgba(124, 159, 255, 0.08); /* slight accent background */
+  color: var(--accent);
+  border-color: rgba(124, 159, 255, 0.2);
+}
+.btn-share-invite:hover:not(:disabled) {
+  background: rgba(124, 159, 255, 0.15);
+  border-color: rgba(124, 159, 255, 0.4);
+}
+
+/* ── Divider ── */
+.divider {
+  position: relative;
+  text-align: center;
+  font-size: 10px;
+  color: var(--dimmer);
+}
+.divider::before, .divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 28%;
+  height: 1px;
+  background: var(--border);
+}
+.divider::before { left: 0; }
+.divider::after  { right: 0; }
+
+/* ── Join row ── */
+.join-row { display: flex; gap: 6px; }
+
+/* ── Input ── */
+.input {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  letter-spacing: 1px;
+  outline: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+.input:focus {
+  border-color: rgba(124,159,255,0.5);
+  background: var(--surface2);
+}
+.input::placeholder { color: var(--dimmer); letter-spacing: 0; font-family: inherit; }
+
+/* ── Connected view ── */
+.room-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.room-card-label {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.room-card-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+code {
+  flex: 1;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--accent);
+  line-height: 1;
+}
+.icon-btn {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 5px 7px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.icon-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+
+/* ── Info row ── */
+.info-row {
+  display: flex;
+  gap: 8px;
+}
+.info-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+}
+.info-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+.info-dot.video-dot { background: var(--dimmer); }
+.info-dot.video-dot.found { background: var(--accent); }
+
+/* ── Members ── */
+.members-strip {
+  font-size: 11px;
+  color: var(--dimmer);
+  text-align: center;
+  padding: 4px 0 2px;
+}
+
+/* ── Flash ── */
+.flash {
+  min-height: 16px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--muted);
+  transition: color 0.2s;
+}
+.flash.ok  { color: var(--green); }
+.flash.err { color: var(--red); }
+
+/* ── Footer ── */
+.footer-hint {
+  font-size: 10px;
+  color: var(--dimmer);
+  text-align: center;
+}
+.server-url {
+  font-family: monospace;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+
+/* ── Utility ── */
+.hidden { display: none !important; }
+
+/* ── Tab warning ── */
+.tab-warn {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #fbbf24;
+  line-height: 1.5;
+}
