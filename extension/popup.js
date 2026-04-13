@@ -79,6 +79,14 @@ async function checkTabReady() {
     setTabWarning(true, pageName);
     return null;
   }
+
+  // Strict check requested by user
+  const lowUrl = tab.url.toLowerCase();
+  if (!lowUrl.includes("youtube.com") && !lowUrl.includes("video") && !lowUrl.includes("watch") && !lowUrl.includes("vimeo")) {
+    flash("⚠ Open a video page first (e.g. YouTube)", "err");
+    return null;
+  }
+
   setTabWarning(false);
   return tab;
 }

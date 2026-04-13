@@ -163,21 +163,26 @@ async function startScreenShare(requestingTabId) {
 
   // Fallback: query for the active tab
   if (!targetTab) {
-    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    targetTab = tabs?.[0] || null;
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    targetTab = activeTab || null;
   }
 
-  if (!targetTab) {
-    return Promise.reject(new Error('No active tab found for screen capture'));
+  if (!targetTab || !targetTab.id) {
+    console.error("[BG] No valid tab found for capture");
+    return Promise.reject(new Error("No valid tab found for screen sharing"));
+  }
+
+  console.log("[BG] Capture Target Tab ID:", targetTab.id);
+  console.log("[BG] Capture Target Tab URL:", targetTab.url);
+
+  if (targetTab.url.startsWith("about:") || targetTab.url.startsWith("chrome://")) {
+    return Promise.reject(new Error("Invalid tab type for screen sharing"));
   }
 
   return new Promise((resolve, reject) => {
-    // KEY FIX: Pass the actual tab object (not null).
-    // Passing null in MV3 causes chooseDesktopMedia to silently return ''
-    // which looks like a cancellation but is actually a Chrome bug.
     chrome.desktopCapture.chooseDesktopMedia(
       ['screen', 'window', 'tab'],
-      targetTab,
+      targetTab, // ✅ PASSING FULL TAB OBJECT
       (streamId) => {
         if (!streamId) {
           // User cancelled — reset state cleanly

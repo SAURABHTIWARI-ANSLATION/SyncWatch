@@ -5,6 +5,10 @@
 //   3. WebRTC peer connections (screen share HOST side) — moved here from offscreen
 //   ALL networking delegated to background.js via chrome.runtime.sendMessage.
 (function () {
+  if (window.top !== window) {
+    console.log("[SW] Inside iframe → skipping injection");
+    return;
+  }
   if (window.__syncwatch_loaded) return;
   window.__syncwatch_loaded = true;
 
