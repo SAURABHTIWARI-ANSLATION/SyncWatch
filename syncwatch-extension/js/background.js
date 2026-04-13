@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────────
 // SyncWatch Extension — Background Service Worker
-// Talks to: https://syncwatch-o4za.onrender.com  (WebSocket + REST)
+// Talks to: https://syncwatch-64jv.onrender.com  (WebSocket + REST)
 // ─────────────────────────────────────────────────────────────────
 'use strict';
 
-const BACKEND_HTTP = 'https://syncwatch-o4za.onrender.com';
-const BACKEND_WS   = 'wss://syncwatch-o4za.onrender.com';
+const BACKEND_HTTP = 'https://syncwatch-64jv.onrender.com';
+const BACKEND_WS   = 'wss://syncwatch-64jv.onrender.com';
 
 // Per-tab state:
 // { roomId, userId, wsUrl, isHost, vframe, vidscore, memberCount }

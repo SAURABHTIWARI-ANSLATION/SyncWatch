@@ -4,7 +4,7 @@
 
 'use strict';
 
-const BACKEND = 'https://syncwatch-o4za.onrender.com';
+const BACKEND = 'https://syncwatch-64jv.onrender.com';
 
 let chatOpen  = false;
 let unreadCount = 0;

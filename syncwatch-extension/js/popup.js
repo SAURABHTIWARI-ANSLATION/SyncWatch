@@ -1,7 +1,7 @@
 // SyncWatch Popup — popup.js
 'use strict';
 
-const BACKEND = 'https://syncwatch-o4za.onrender.com';
+const BACKEND = 'https://syncwatch-64jv.onrender.com';
 
 let currentTabId   = null;
 let currentTabUrl  = null;
