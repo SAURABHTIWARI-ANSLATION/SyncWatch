@@ -298,8 +298,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       let tabId = sender.tab?.id;
       // Fallback if sender.tab is missing in some contexts
       if (!tabId) {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        tabId = activeTab?.id;
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          tabId = tabs?.[0]?.id;
+          
+          if (!tabId) {
+            console.error("[BG] No valid tabId for screen share");
+            sendResponse({ ok: false, error: "No valid tab found" });
+            return;
+          }
+
+          startScreenShare(tabId)
+            .then(() => sendResponse({ ok: true }))
+            .catch(e => {
+              console.error('[BG] startScreenShare error:', e.message);
+              sendResponse({ ok: false, error: e.message });
+            });
+        });
+        return true; // keep channel open for async response
       }
 
       if (!tabId) {
