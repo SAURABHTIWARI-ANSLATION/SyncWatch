@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "SyncWatch",
+  "short_name": "SyncWatch",
+  "description": "Watch videos together with friends in real-time sync. Supports YouTube, Netflix, Prime Video & any video site.",
+  "version": "1.0.0",
+  "background": {
+    "service_worker": "js/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["js/content.js"],
+      "all_frames": true,
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SyncWatch",
+    "default_icon": {
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "web_accessible_resources": [
+    {
+      "resources": ["controls.html", "js/controls.js", "icons/icon48.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
