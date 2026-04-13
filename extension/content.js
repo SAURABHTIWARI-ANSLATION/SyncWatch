@@ -243,6 +243,7 @@
     if (!pc) {
       pc = new RTCPeerConnection(ICE_SERVERS);
       rtcPeers[senderId] = pc;
+      pc.iceQueue = [];
       setupPeer(pc, senderId);
       if (localStream) {
         localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
@@ -254,10 +255,24 @@
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       wsend({ type: 'signal', targetId: senderId, signalData: { answer } });
+      
+      if (pc.iceQueue) {
+        pc.iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+        pc.iceQueue = [];
+      }
     } else if (signal.answer) {
       await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
+      if (pc.iceQueue) {
+        pc.iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+        pc.iceQueue = [];
+      }
     } else if (signal.candidate) {
-      try { await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)); } catch {}
+      if (pc.remoteDescription && pc.remoteDescription.type) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)); } catch {}
+      } else {
+        if (!pc.iceQueue) pc.iceQueue = [];
+        pc.iceQueue.push(new RTCIceCandidate(signal.candidate));
+      }
     }
   }
 

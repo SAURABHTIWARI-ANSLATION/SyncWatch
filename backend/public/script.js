@@ -170,6 +170,7 @@ async function handleSignal(senderId, signal) {
   if (!pc) {
     pc = new RTCPeerConnection(ICE_SERVERS);
     rtcPeers[senderId] = pc;
+    pc.iceQueue = [];
     pc.onicecandidate = e => {
       if (e.candidate) send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
     };
@@ -189,10 +190,24 @@ async function handleSignal(senderId, signal) {
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     send({ type: 'signal', targetId: senderId, signalData: { answer } });
+    
+    if (pc.iceQueue) {
+      pc.iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+      pc.iceQueue = [];
+    }
   } else if (signal.answer) {
     await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
+    if (pc.iceQueue) {
+      pc.iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+      pc.iceQueue = [];
+    }
   } else if (signal.candidate) {
-    try { await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)); } catch {}
+    if (pc.remoteDescription && pc.remoteDescription.type) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)); } catch {}
+    } else {
+      if (!pc.iceQueue) pc.iceQueue = [];
+      pc.iceQueue.push(new RTCIceCandidate(signal.candidate));
+    }
   }
 }
 
