@@ -1,20 +1,12 @@
-// SyncWatch Controls Overlay — controls.js
-// Runs inside the controls.html iframe (injected on video pages)
-// Communicates with content.js via window.parent.postMessage
-
+// SyncWatch Controls Overlay — controls.js  (FIXED v1.1)
 'use strict';
 
 const BACKEND = 'https://syncwatch-64jv.onrender.com';
 
-let chatOpen  = false;
+let chatOpen = false;
 let unreadCount = 0;
 let isSharing = false;
-let myRoomId  = null;
-
-// ── Post message to content script (parent) ───────────────────────
-function toContent(data) {
-  window.parent.postMessage({ swOverlay: data.type || data, ...data }, '*');
-}
+let myRoomId = null;
 
 // ── Listen for messages FROM content script ───────────────────────
 window.addEventListener('message', e => {
@@ -33,6 +25,7 @@ window.addEventListener('message', e => {
     case 'play':
       addMsg('sys', '▶ Remote: Play');
       break;
+
     case 'pause':
       addMsg('sys', '⏸ Remote: Pause');
       break;
@@ -52,24 +45,31 @@ window.addEventListener('message', e => {
       addMsg('sys', `${msg.userId} left`);
       break;
 
-    case 'screenShareStarted':
+    // FIX: wrapped in block {} to avoid "const in case" SyntaxError in strict mode
+    case 'screenShareStarted': {
       isSharing = true;
       const btn = document.getElementById('btn-share');
       btn.textContent = '🔴 Stop Share';
       btn.classList.add('active');
       addMsg('sys', '📡 Screen share started');
       break;
+    }
 
-    case 'screenShareStopped':
+    case 'screenShareStopped': {
       isSharing = false;
       const btnS = document.getElementById('btn-share');
       btnS.textContent = '📡 Share Screen';
       btnS.classList.remove('active');
       addMsg('sys', 'Screen share ended');
       break;
+    }
 
     case 'screenShareError':
       addMsg('sys', `Screen share error: ${msg.msg}`);
+      break;
+
+    case 'streamEnded':
+      addMsg('sys', 'Screen share stream ended');
       break;
 
     case 'error':
@@ -78,7 +78,6 @@ window.addEventListener('message', e => {
       break;
 
     case 'timeUpdate':
-      // Could show time in bar if needed
       break;
 
     case 'duration':
@@ -131,9 +130,7 @@ document.getElementById('btn-chat').addEventListener('click', () => {
 
 // Chat send
 document.getElementById('chat-send').addEventListener('click', sendChat);
-document.getElementById('chat-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') sendChat();
-});
+document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 
 function sendChat() {
   const input = document.getElementById('chat-input');
@@ -182,18 +179,15 @@ function bumpUnread() {
 }
 
 function setConnected(ok) {
-  const dot = document.getElementById('conn-dot');
-  const lbl = document.getElementById('conn-label');
-  dot.className = 'status-dot' + (ok ? '' : ' red');
-  lbl.textContent = ok ? 'Connected' : 'Disconnected';
+  document.getElementById('conn-dot').className = 'status-dot' + (ok ? '' : ' red');
+  document.getElementById('conn-label').textContent = ok ? 'Connected' : 'Disconnected';
 }
 
 function showSyncFlash() {
   const el = document.createElement('span');
   el.className = 'sync-flash';
   el.textContent = '✓ Synced';
-  const bar = document.getElementById('bar');
-  bar.appendChild(el);
+  document.getElementById('bar').appendChild(el);
   setTimeout(() => el.remove(), 1600);
 }
 

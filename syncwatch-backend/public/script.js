@@ -1,4 +1,4 @@
-// SyncWatch Web Client v3 — FIXED
+// SyncWatch Web Client  (FIXED v1.1)
 'use strict';
 
 let socket = null;
@@ -6,54 +6,38 @@ let player = null;
 let roomId = null;
 let userId = null;
 let isSyncing = false;
-let playerReady = false;   // FIX: track when YT player is actually ready
+let playerReady = false;
 let streamConnected = false;
 
-// WebRTC State
+// FIX: retry state for Render.com cold-start reconnection
+let retryCount = 0;
+const MAX_RETRY = 8;
+const RETRY_DELAYS = [2000, 3000, 5000, 8000, 10000, 15000, 20000, 30000];
+
+// WebRTC
 let rtcPeers = {};
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
   ]
 };
 
-// ── 1. Extract Room ID from URL ───────────────────────────
+// ── 1. Room ID from URL ───────────────────────────────────
 const cleanPath = window.location.pathname.replace(/\/$/, '');
-const pathParts = cleanPath.split('/');
-roomId = pathParts[pathParts.length - 1].toUpperCase().replace(/[^A-Z0-9]/g, '');
-
-if (roomId) {
-  document.getElementById('inp-room-id').value = roomId;
-}
+roomId = cleanPath.split('/').pop().toUpperCase().replace(/[^A-Z0-9]/g, '');
+if (roomId) document.getElementById('inp-room-id').value = roomId;
 
 // ── 2. YouTube API ────────────────────────────────────────
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('yt-player', {
-    height: '100%',
-    width: '100%',
-    videoId: '',
+    height: '100%', width: '100%', videoId: '',
     playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1 },
     events: {
-      onReady: () => {
-        playerReady = true;
-        console.log('[SW] YT player ready');
-      },
+      onReady: () => { playerReady = true; },
       onStateChange: onPlayerStateChange
     }
   });
@@ -61,64 +45,102 @@ function onYouTubeIframeAPIReady() {
 
 function onPlayerStateChange(event) {
   if (isSyncing || !playerReady) return;
-  if (event.data === YT.PlayerState.PLAYING) {
-    send({ type: 'play', time: player.getCurrentTime() });
-  } else if (event.data === YT.PlayerState.PAUSED) {
-    send({ type: 'pause', time: player.getCurrentTime() });
-  }
+  if (event.data === YT.PlayerState.PLAYING) send({ type: 'play', time: player.getCurrentTime() });
+  else if (event.data === YT.PlayerState.PAUSED) send({ type: 'pause', time: player.getCurrentTime() });
 }
 
-// ── 3. Connection ─────────────────────────────────────────
-document.getElementById('btn-join').addEventListener('click', startSync);
+// ── 3. Connection with retry ──────────────────────────────
+document.getElementById('btn-join').addEventListener('click', () => { retryCount = 0; startSync(); });
 
 function startSync() {
   if (!roomId) return alert('No Room ID found!');
 
+  setStatus('connecting');
   document.getElementById('loading-screen').classList.remove('hidden');
   document.getElementById('btn-join').disabled = true;
 
-  // FIX: Always use the hardcoded server URL for Render.com deployment.
-  // Using window.location.host breaks when the page is served from a CDN
-  // or if the path is different from the WebSocket server path.
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsHost = window.location.host;
-  const wsUrl = `${protocol}//${wsHost}`;
+  // FIX: Show friendly message while Render wakes up
+  if (retryCount > 0) {
+    document.querySelector('#loading-screen p').textContent =
+      `Server is waking up… (attempt ${retryCount + 1}/${MAX_RETRY})`;
+  } else {
+    document.querySelector('#loading-screen p').textContent = 'Connecting to SyncWatch...';
+  }
 
-  socket = new WebSocket(wsUrl);
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  socket = new WebSocket(`${protocol}//${window.location.host}`);
+
+  // FIX: 15-second connection timeout — Render free tier can be slow
+  const connectTimeout = setTimeout(() => {
+    if (socket.readyState !== WebSocket.OPEN) {
+      socket.close();
+      handleRetry('Server is taking a while to wake up...');
+    }
+  }, 15000);
 
   socket.onopen = () => {
+    clearTimeout(connectTimeout);
+    retryCount = 0;
+    setStatus('online');
     send({ type: 'join', roomId });
-    document.getElementById('status-dot').className = 'status-dot online';
-    console.log('[SW] WebSocket connected, joining room:', roomId);
   };
 
-  socket.onmessage = (e) => {
-    try { handleMessage(JSON.parse(e.data)); } catch (err) {
-      console.error('[SW] Message parse error:', err);
+  socket.onmessage = e => {
+    try { handleMessage(JSON.parse(e.data)); } catch (err) { console.error('[SW] Parse error:', err); }
+  };
+
+  socket.onclose = e => {
+    clearTimeout(connectTimeout);
+    setStatus('offline');
+    if (e.code !== 1000 && e.code !== 1001) {
+      // Abnormal close — try to reconnect
+      handleRetry('Connection lost. Reconnecting...');
+    } else {
+      addChatMessage('System', 'Disconnected. Refresh to reconnect.');
+      document.getElementById('btn-join').disabled = false;
     }
   };
 
-  socket.onclose = (e) => {
-    document.getElementById('status-dot').className = 'status-dot offline';
-    console.log('[SW] WebSocket closed:', e.code, e.reason);
-    addChatMessage('System', 'Disconnected from server. Refresh to reconnect.');
-    // Re-enable join button so user can retry
-    document.getElementById('btn-join').disabled = false;
-  };
-
-  socket.onerror = (err) => {
-    console.error('[SW] WebSocket error:', err);
-    document.getElementById('status-dot').className = 'status-dot offline';
-    document.getElementById('btn-join').disabled = false;
-    document.getElementById('loading-screen').classList.add('hidden');
-    addChatMessage('System', 'Connection error. Please refresh and try again.');
+  socket.onerror = () => {
+    clearTimeout(connectTimeout);
+    setStatus('offline');
   };
 }
 
-function send(data) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(data));
+// FIX: Auto-retry with exponential backoff for Render.com cold start
+function handleRetry(reason) {
+  if (retryCount >= MAX_RETRY) {
+    document.getElementById('loading-screen').classList.add('hidden');
+    document.getElementById('btn-join').disabled = false;
+    addChatMessage('System', `Could not connect after ${MAX_RETRY} attempts. Check your connection and refresh.`);
+    return;
   }
+
+  const delay = RETRY_DELAYS[retryCount] || 30000;
+  addChatMessage('System', `${reason} Retrying in ${Math.round(delay / 1000)}s...`);
+
+  // Show retry countdown in loading screen
+  let remaining = Math.round(delay / 1000);
+  const countdownEl = document.querySelector('#loading-screen p');
+  const interval = setInterval(() => {
+    remaining--;
+    if (countdownEl) countdownEl.textContent = `Server waking up… retrying in ${remaining}s (attempt ${retryCount + 1}/${MAX_RETRY})`;
+  }, 1000);
+
+  setTimeout(() => {
+    clearInterval(interval);
+    retryCount++;
+    startSync();
+  }, delay);
+}
+
+function setStatus(state) {
+  const dot = document.getElementById('status-dot');
+  dot.className = 'status-dot ' + (state === 'online' ? 'online' : 'offline');
+}
+
+function send(data) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
 }
 
 // ── 4. Message handler ────────────────────────────────────
@@ -127,46 +149,28 @@ function handleMessage(msg) {
 
     case 'joined':
       userId = msg.userId;
-      console.log('[SW] Joined room as', userId, '| members:', msg.memberCount);
-
-      // Switch views
       document.getElementById('view-idle').classList.add('hidden');
       document.getElementById('view-player').classList.remove('hidden');
       document.getElementById('room-badge').classList.remove('hidden');
       document.getElementById('room-id-display').textContent = roomId;
       document.getElementById('loading-screen').classList.add('hidden');
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
-
-      // Show waiting splash until screen share stream arrives
       showWaitingSplash();
-
-      // FIX: Only apply sync state if there's meaningful state to sync to.
-      // Don't try to sync if time=0 and not playing — that's just the default state.
-      // Also guard against calling YT API before player is ready.
-      if (msg.state && (msg.state.playing || msg.state.time > 2)) {
-        // Defer sync until YT player is ready
-        waitForPlayerThenSync(msg.state);
-      }
+      if (msg.state && (msg.state.playing || msg.state.time > 2)) waitForPlayerThenSync(msg.state);
       break;
 
     case 'play':
-      if (msg.userId !== userId && !streamConnected) {
-        applySync({ time: msg.time, playing: true });
-      }
+      if (msg.userId !== userId && !streamConnected) applySync({ time: msg.time, playing: true });
       break;
 
     case 'pause':
-      if (msg.userId !== userId && !streamConnected) {
-        applySync({ time: msg.time, playing: false });
-      }
+      if (msg.userId !== userId && !streamConnected) applySync({ time: msg.time, playing: false });
       break;
 
     case 'seek':
       if (msg.userId !== userId && !streamConnected) {
         isSyncing = true;
-        if (player && playerReady) {
-          try { player.seekTo(msg.time, true); } catch { }
-        }
+        if (player && playerReady) { try { player.seekTo(msg.time, true); } catch (_) { } }
         setTimeout(() => { isSyncing = false; }, 500);
       }
       break;
@@ -185,10 +189,7 @@ function handleMessage(msg) {
       break;
 
     case 'user_left':
-      if (rtcPeers[msg.userId]) {
-        rtcPeers[msg.userId].close();
-        delete rtcPeers[msg.userId];
-      }
+      if (rtcPeers[msg.userId]) { rtcPeers[msg.userId].close(); delete rtcPeers[msg.userId]; }
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       addChatMessage('System', `${msg.userId} left`);
       break;
@@ -200,31 +201,20 @@ function handleMessage(msg) {
     case 'error':
       document.getElementById('loading-screen').classList.add('hidden');
       document.getElementById('btn-join').disabled = false;
-      console.error('[SW] Server error:', msg.msg);
       addChatMessage('System', 'Error: ' + msg.msg);
       break;
   }
 }
 
-// ── 5. Sync apply (for YouTube fallback) ─────────────────
+// ── 5. Sync apply ─────────────────────────────────────────
 
-// FIX: Wait for YT player to be ready before trying to sync
 function waitForPlayerThenSync(state) {
-  if (playerReady) {
-    applySync(state);
-    return;
-  }
-  // Poll until player is ready (max 10 seconds)
+  if (playerReady) { applySync(state); return; }
   let attempts = 0;
   const check = setInterval(() => {
     attempts++;
-    if (playerReady) {
-      clearInterval(check);
-      applySync(state);
-    } else if (attempts > 20) {
-      clearInterval(check);
-      console.warn('[SW] YT player never became ready for sync');
-    }
+    if (playerReady) { clearInterval(check); applySync(state); }
+    else if (attempts > 20) { clearInterval(check); }
   }, 500);
 }
 
@@ -232,14 +222,10 @@ function applySync(state) {
   if (!player || !state || streamConnected || !playerReady) return;
   isSyncing = true;
   try {
-    const currentTime = player.getCurrentTime();
-    const diff = Math.abs(currentTime - state.time);
-    if (diff > 1.5) player.seekTo(state.time, true);
+    if (Math.abs(player.getCurrentTime() - state.time) > 1.5) player.seekTo(state.time, true);
     if (state.playing) player.playVideo();
     else player.pauseVideo();
-  } catch (e) {
-    console.warn('[SW] applySync error:', e);
-  }
+  } catch (e) { console.warn('[SW] applySync error:', e); }
   setTimeout(() => { isSyncing = false; }, 800);
 }
 
@@ -247,25 +233,22 @@ function applySync(state) {
 function showWaitingSplash() {
   if (streamConnected) return;
   hideWaitingSplash();
-
   const wrapper = document.querySelector('.player-wrapper');
   if (!wrapper) return;
-
   const splash = document.createElement('div');
   splash.id = 'sw-waiting';
   splash.innerHTML = `
-    <div style="
-      position:absolute;inset:0;display:flex;flex-direction:column;
+    <div style="position:absolute;inset:0;display:flex;flex-direction:column;
       align-items:center;justify-content:center;gap:16px;
       background:rgba(5,8,15,0.95);z-index:20;
       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-      color:#f8fafc;text-align:center;padding:32px;
-    ">
-      <div style="width:48px;height:48px;border:4px solid #1e293b;border-top-color:#7c9fff;border-radius:50%;animation:swspin 1s linear infinite;"></div>
+      color:#f8fafc;text-align:center;padding:32px;">
+      <div style="width:48px;height:48px;border:4px solid #1e293b;border-top-color:#7c9fff;
+        border-radius:50%;animation:swspin 1s linear infinite;"></div>
       <div style="font-size:20px;font-weight:700;">Waiting for host to share screen</div>
       <div style="font-size:14px;color:#64748b;max-width:280px;line-height:1.6;">
-        The host needs to click <strong style="color:#7c9fff">Share Screen</strong> in their SyncWatch extension overlay to start sharing.
-        <br><br>
+        The host needs to click <strong style="color:#7c9fff">Share Screen</strong> in their
+        SyncWatch extension overlay to start sharing.<br><br>
         Video sync is still active while you wait.
       </div>
     </div>
@@ -281,54 +264,29 @@ function hideWaitingSplash() {
 
 // ── 7. WebRTC ─────────────────────────────────────────────
 async function handleSignal(senderId, signal) {
-  console.log('[WC] Handling signal from:', senderId, signal);
   let pc = rtcPeers[senderId];
   if (!pc) {
-    console.log('[WC] Creating new peer for:', senderId);
     pc = new RTCPeerConnection(ICE_SERVERS);
     pc._iceQueue = [];
     rtcPeers[senderId] = pc;
 
     pc.onicecandidate = e => {
-      if (e.candidate) {
-        console.log('[WC] Sending ICE candidate to:', senderId);
-        send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
-      }
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      console.log('[WC] ICE state:', pc.iceConnectionState, 'for peer:', senderId);
+      if (e.candidate) send({ type: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
     };
 
     pc.ontrack = e => {
-      if (!e.streams || !e.streams[0]) {
-        console.warn('[WC] No streams in track event');
-        return;
-      }
-      console.log('[WC] Received remote track from:', senderId);
-
+      if (!e.streams?.[0]) return;
       const remoteVid = document.getElementById('remote-stream');
       const ytPlayer = document.getElementById('yt-player');
-
-      if (remoteVid) {
-        remoteVid.srcObject = e.streams[0];
-        remoteVid.style.display = 'block';
-        remoteVid.play().catch(err => console.warn('[WC] video play error:', err));
-      }
+      if (remoteVid) { remoteVid.srcObject = e.streams[0]; remoteVid.style.display = 'block'; remoteVid.play().catch(() => { }); }
       if (ytPlayer) ytPlayer.style.display = 'none';
-
       streamConnected = true;
       hideWaitingSplash();
       addChatMessage('System', '🎥 Live screen share connected!');
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('[WC] Connection state:', pc.connectionState, 'for peer:', senderId);
-      if (pc.connectionState === 'connected') {
-        console.log('[WC] Peer connected:', senderId);
-      }
       if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-        console.warn('[WC] Peer connection lost:', senderId, pc.connectionState);
         const remoteVid = document.getElementById('remote-stream');
         const ytPlayer = document.getElementById('yt-player');
         if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; }
@@ -343,30 +301,20 @@ async function handleSignal(senderId, signal) {
 
   try {
     if (signal.offer) {
-      console.log('[WC] Setting remote description (offer)');
       await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      console.log('[WC] Sending answer');
       send({ type: 'signal', targetId: senderId, signalData: { answer } });
       drainIceQueue(pc);
-
     } else if (signal.answer) {
-      console.log('[WC] Setting remote description (answer)');
       await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
       drainIceQueue(pc);
-
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
-      if (pc.remoteDescription?.type) {
-        pc.addIceCandidate(ice).catch(() => { });
-      } else {
-        pc._iceQueue.push(ice);
-      }
+      if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
+      else pc._iceQueue.push(ice);
     }
-  } catch (e) {
-    console.error('[WC] Signal error:', e);
-  }
+  } catch (e) { console.error('[WC] Signal error:', e); }
 }
 
 function drainIceQueue(pc) {
@@ -375,19 +323,17 @@ function drainIceQueue(pc) {
   pc._iceQueue = [];
 }
 
-// ── 8. Chat UI ────────────────────────────────────────────
-const chatInput = document.getElementById('chat-input');
-const chatSend = document.getElementById('chat-send');
-
-chatSend.addEventListener('click', sendChat);
-chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+// ── 8. Chat ───────────────────────────────────────────────
+document.getElementById('chat-send').addEventListener('click', sendChat);
+document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 
 function sendChat() {
-  const text = chatInput.value.trim();
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   send({ type: 'chat', text });
   addChatMessage('You', text);
-  chatInput.value = '';
+  input.value = '';
 }
 
 function addChatMessage(author, text) {
@@ -395,14 +341,12 @@ function addChatMessage(author, text) {
   if (!box) return;
   const div = document.createElement('div');
   div.className = author === 'System' ? 'msg system' : 'msg';
-
   if (author !== 'System') {
     div.innerHTML = `<span class="author">${esc(author)}:</span> <span class="text"></span>`;
     div.querySelector('.text').textContent = text;
   } else {
     div.textContent = text;
   }
-
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
 }
@@ -413,12 +357,8 @@ function esc(str) {
   );
 }
 
-// ── 9. Init: Auto-join if roomId present in the URL ───────
+// ── 9. Init ───────────────────────────────────────────────
 window.addEventListener('load', () => {
   document.getElementById('loading-screen').classList.add('hidden');
-
-  if (roomId) {
-    // Small delay to let WebSocket infrastructure be ready
-    setTimeout(startSync, 300);
-  }
+  if (roomId) setTimeout(startSync, 300);
 });

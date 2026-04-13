@@ -1,71 +1,54 @@
 // ─────────────────────────────────────────────────────────────────
-// SyncWatch Extension — Background Service Worker
-// Talks to: https://syncwatch-64jv.onrender.com  (WebSocket + REST)
+// SyncWatch Extension — Background Service Worker  (FIXED v1.1)
 // ─────────────────────────────────────────────────────────────────
 'use strict';
 
 const BACKEND_HTTP = 'https://syncwatch-64jv.onrender.com';
-const BACKEND_WS   = 'wss://syncwatch-64jv.onrender.com';
+const BACKEND_WS = 'wss://syncwatch-64jv.onrender.com';
 
-// Per-tab state:
-// { roomId, userId, wsUrl, isHost, vframe, vidscore, memberCount }
-let db = {};
+let db = {};   // Per-tab state
+let sockets = {};   // One WebSocket per tab
 
-// One shared WebSocket per tab (keyed by tabId)
-let sockets = {};
+chrome.storage.session.get(['db']).then(d => { db = d.db || {}; });
 
-// Restore session state on startup
-chrome.storage.session.get(['db']).then(d => {
-  db = d.db || {};
-});
-
-function saveDb() {
-  chrome.storage.session.set({ db });
-}
+function saveDb() { chrome.storage.session.set({ db }); }
 
 // ── Utility ──────────────────────────────────────────────────────
 
-function sendToTab(tabId, msg, frameId = 0) {
-  chrome.tabs.sendMessage(tabId, msg, { frameId }).catch(() => {});
+function sendToTab(tabId, msg) {
+  chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }).catch(() => { });
 }
 
 function wsSend(tabId, msg) {
   const ws = sockets[tabId];
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
-  }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
 // ── WebSocket management ──────────────────────────────────────────
 
 function connectWS(tabId, roomId, isHost) {
-  // Close existing socket for this tab
-  if (sockets[tabId]) {
-    try { sockets[tabId].close(); } catch (_) {}
-  }
+  if (sockets[tabId]) { try { sockets[tabId].close(); } catch (_) { } }
 
   const ws = new WebSocket(BACKEND_WS);
   sockets[tabId] = ws;
 
   ws.onopen = () => {
-    console.log(`[SW] WS open for tab ${tabId}, joining room ${roomId}`);
+    console.log(`[SW] WS open tab=${tabId} room=${roomId}`);
     ws.send(JSON.stringify({ type: 'join', roomId }));
   };
 
   ws.onmessage = e => {
-    let msg;
-    try { msg = JSON.parse(e.data); } catch { return; }
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
     handleServerMessage(tabId, msg);
   };
 
   ws.onclose = () => {
-    console.log(`[SW] WS closed for tab ${tabId}`);
+    console.log(`[SW] WS closed tab=${tabId}`);
     sendToTab(tabId, { sw: 'disconnected' });
     delete sockets[tabId];
   };
 
-  ws.onerror = err => {
-    console.error(`[SW] WS error for tab ${tabId}:`, err);
+  ws.onerror = () => {
     sendToTab(tabId, { sw: 'error', msg: 'WebSocket connection failed' });
   };
 }
@@ -80,27 +63,40 @@ function handleServerMessage(tabId, msg) {
       db[tabId].userId = msg.userId;
       db[tabId].roomId = msg.roomId;
       db[tabId].memberCount = msg.memberCount;
+      // FIX: store otherUsers so they're available for getStatus calls
+      db[tabId].otherUsers = msg.otherUsers || [];
       saveDb();
 
-      // Forward to content + popup
-      sendToTab(tabId, { sw: 'joined', roomId: msg.roomId, userId: msg.userId, memberCount: msg.memberCount, state: msg.state });
-      // Notify popup if open
-      chrome.runtime.sendMessage({ sw: 'joined', tabId, roomId: msg.roomId, memberCount: msg.memberCount, state: msg.state }).catch(() => {});
+      // FIX: forward otherUsers to content script so screen share knows who to offer
+      sendToTab(tabId, {
+        sw: 'joined',
+        roomId: msg.roomId,
+        userId: msg.userId,
+        memberCount: msg.memberCount,
+        state: msg.state,
+        otherUsers: msg.otherUsers || []
+      });
+      chrome.runtime.sendMessage({
+        sw: 'joined', tabId,
+        roomId: msg.roomId,
+        memberCount: msg.memberCount,
+        state: msg.state
+      }).catch(() => { });
       break;
 
     case 'play':
       sendToTab(tabId, { sw: 'play', time: msg.time, userId: msg.userId });
-      chrome.runtime.sendMessage({ sw: 'play', tabId, time: msg.time, userId: msg.userId }).catch(() => {});
+      chrome.runtime.sendMessage({ sw: 'play', tabId, time: msg.time, userId: msg.userId }).catch(() => { });
       break;
 
     case 'pause':
       sendToTab(tabId, { sw: 'pause', time: msg.time, userId: msg.userId });
-      chrome.runtime.sendMessage({ sw: 'pause', tabId, time: msg.time, userId: msg.userId }).catch(() => {});
+      chrome.runtime.sendMessage({ sw: 'pause', tabId, time: msg.time, userId: msg.userId }).catch(() => { });
       break;
 
     case 'seek':
       sendToTab(tabId, { sw: 'seek', time: msg.time, userId: msg.userId });
-      chrome.runtime.sendMessage({ sw: 'seek', tabId, time: msg.time, userId: msg.userId }).catch(() => {});
+      chrome.runtime.sendMessage({ sw: 'seek', tabId, time: msg.time, userId: msg.userId }).catch(() => { });
       break;
 
     case 'sync':
@@ -109,31 +105,43 @@ function handleServerMessage(tabId, msg) {
 
     case 'chat':
       sendToTab(tabId, { sw: 'chat', text: msg.text, userId: msg.userId, ts: msg.ts });
-      chrome.runtime.sendMessage({ sw: 'chat', tabId, text: msg.text, userId: msg.userId }).catch(() => {});
+      chrome.runtime.sendMessage({ sw: 'chat', tabId, text: msg.text, userId: msg.userId }).catch(() => { });
       break;
 
     case 'user_joined':
-      if (db[tabId]) db[tabId].memberCount = msg.memberCount;
-      saveDb();
+      if (db[tabId]) {
+        db[tabId].memberCount = msg.memberCount;
+        // FIX: maintain otherUsers list so screen share can reach new viewers
+        if (!db[tabId].otherUsers) db[tabId].otherUsers = [];
+        if (!db[tabId].otherUsers.includes(msg.userId)) {
+          db[tabId].otherUsers.push(msg.userId);
+        }
+        saveDb();
+      }
       sendToTab(tabId, { sw: 'user_joined', userId: msg.userId, memberCount: msg.memberCount });
-      chrome.runtime.sendMessage({ sw: 'user_joined', tabId, userId: msg.userId, memberCount: msg.memberCount }).catch(() => {});
+      chrome.runtime.sendMessage({ sw: 'user_joined', tabId, userId: msg.userId, memberCount: msg.memberCount }).catch(() => { });
       break;
 
     case 'user_left':
-      if (db[tabId]) db[tabId].memberCount = msg.memberCount;
-      saveDb();
+      if (db[tabId]) {
+        db[tabId].memberCount = msg.memberCount;
+        // FIX: remove departed user from otherUsers list
+        if (db[tabId].otherUsers) {
+          db[tabId].otherUsers = db[tabId].otherUsers.filter(id => id !== msg.userId);
+        }
+        saveDb();
+      }
       sendToTab(tabId, { sw: 'user_left', userId: msg.userId, memberCount: msg.memberCount });
-      chrome.runtime.sendMessage({ sw: 'user_left', tabId, userId: msg.userId, memberCount: msg.memberCount }).catch(() => {});
+      chrome.runtime.sendMessage({ sw: 'user_left', tabId, userId: msg.userId, memberCount: msg.memberCount }).catch(() => { });
       break;
 
     case 'signal':
-      // WebRTC signaling — forward to content script (screen share)
       sendToTab(tabId, { sw: 'signal', senderId: msg.senderId, signalData: msg.signalData });
       break;
 
     case 'error':
       sendToTab(tabId, { sw: 'error', msg: msg.msg });
-      chrome.runtime.sendMessage({ sw: 'error', tabId, msg: msg.msg }).catch(() => {});
+      chrome.runtime.sendMessage({ sw: 'error', tabId, msg: msg.msg }).catch(() => { });
       break;
 
     case 'heartbeat_ack':
@@ -155,31 +163,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(r => r.json())
       .then(data => {
         const roomId = data.roomId;
-        const tabId  = msg.tabId;
-
-        db[tabId] = {
-          roomId,
-          isHost: true,
-          userId: null,
-          memberCount: 1,
-          vframe: null,
-          vidscore: 0
-        };
+        const tabId = msg.tabId;
+        db[tabId] = { roomId, isHost: true, userId: null, memberCount: 1, otherUsers: [] };
         saveDb();
-
         connectWS(tabId, roomId, true);
         sendResponse({ ok: true, roomId });
       })
       .catch(e => sendResponse({ ok: false, error: e.message }));
-    return true; // async
+    return true;
   }
 
   // ── Popup: Join Room ──
   if (msg.action === 'joinRoom') {
     const roomId = (msg.roomId || '').toUpperCase().trim();
-    const tabId  = msg.tabId;
-
-    // Check if room exists first
+    const tabId = msg.tabId;
     fetch(`${BACKEND_HTTP}/room/${roomId}`)
       .then(r => r.json())
       .then(data => {
@@ -187,14 +184,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: `Room "${roomId}" not found or expired.` });
           return;
         }
-        db[tabId] = {
-          roomId,
-          isHost: false,
-          userId: null,
-          memberCount: 0,
-          vframe: null,
-          vidscore: 0
-        };
+        db[tabId] = { roomId, isHost: false, userId: null, memberCount: 0, otherUsers: [] };
         saveDb();
         connectWS(tabId, roomId, false);
         sendResponse({ ok: true, roomId });
@@ -203,41 +193,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ── Popup: Leave Room ──
+  // ── Popup / Content: Leave Room ──
+  // FIX: accept tabId from popup OR use senderTabId from content script
   if (msg.action === 'leaveRoom') {
-    const tabId = msg.tabId;
-    if (sockets[tabId]) {
-      try { sockets[tabId].close(); } catch (_) {}
-      delete sockets[tabId];
-    }
-    if (db[tabId]) {
-      delete db[tabId];
-      saveDb();
-    }
+    const tabId = msg.tabId || senderTabId;
+    if (!tabId) { sendResponse && sendResponse({ ok: false, error: 'No tabId' }); return true; }
+    if (sockets[tabId]) { try { sockets[tabId].close(); } catch (_) { } delete sockets[tabId]; }
+    if (db[tabId]) { delete db[tabId]; saveDb(); }
     sendToTab(tabId, { sw: 'left' });
-    sendResponse({ ok: true });
+    sendResponse && sendResponse({ ok: true });
     return true;
   }
 
-  // ── Popup / Content: Get status for a tab ──
+  // ── Popup / Content: Get status ──
+  // FIX: use senderTabId as fallback when msg.tabId is null (content script calls)
   if (msg.action === 'getStatus') {
-    const tabId = msg.tabId;
+    const tabId = msg.tabId || senderTabId;
     sendResponse({
-      room: db[tabId] || null,
-      connected: !!(sockets[tabId] && sockets[tabId].readyState === WebSocket.OPEN)
+      room: tabId ? (db[tabId] || null) : null,
+      connected: tabId ? !!(sockets[tabId] && sockets[tabId].readyState === WebSocket.OPEN) : false
     });
     return true;
   }
 
-  // ── Content: Playback events (play/pause/seek) → forward to server ──
+  // ── Content: Playback events → forward to server ──
   if (msg.action === 'playbackEvent' && senderTabId) {
-    const tabId = senderTabId;
-    if (!db[tabId]) return;
-    wsSend(tabId, msg.event);
+    if (!db[senderTabId]) return;
+    wsSend(senderTabId, msg.event);
     return;
   }
 
-  // ── Content: Chat message from controls overlay ──
+  // ── Content: Chat message ──
   if (msg.action === 'sendChat' && senderTabId) {
     wsSend(senderTabId, { type: 'chat', text: msg.text });
     return;
@@ -245,11 +231,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ── Content: WebRTC signal (screen share) ──
   if (msg.action === 'signal' && senderTabId) {
-    wsSend(senderTabId, {
-      type: 'signal',
-      targetId: msg.targetId,
-      signalData: msg.signalData
-    });
+    wsSend(senderTabId, { type: 'signal', targetId: msg.targetId, signalData: msg.signalData });
     return;
   }
 
@@ -259,12 +241,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
 
-  // ── Content: Video found (score detection) ──
+  // ── Content: Video found ──
   if (msg.action === 'videoFound' && senderTabId) {
     if (!db[senderTabId]) return;
     if (msg.score > (db[senderTabId].vidscore || 0)) {
       db[senderTabId].vidscore = msg.score;
-      db[senderTabId].vframe  = sender.frameId;
+      db[senderTabId].vframe = sender.frameId;
       saveDb();
     }
     return;
@@ -280,12 +262,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ── Tab cleanup ───────────────────────────────────────────────────
 
 chrome.tabs.onRemoved.addListener(tabId => {
-  if (sockets[tabId]) {
-    try { sockets[tabId].close(); } catch (_) {}
-    delete sockets[tabId];
-  }
-  if (db[tabId]) {
-    delete db[tabId];
-    saveDb();
-  }
+  if (sockets[tabId]) { try { sockets[tabId].close(); } catch (_) { } delete sockets[tabId]; }
+  if (db[tabId]) { delete db[tabId]; saveDb(); }
 });
