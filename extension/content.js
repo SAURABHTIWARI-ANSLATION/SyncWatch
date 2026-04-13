@@ -1,8 +1,9 @@
-// SyncWatch Content Script v2
-// Responsibilities: DOM overlay UI, video detection, sync apply.
-// ALL networking is delegated to background.js via chrome.runtime.sendMessage.
-// This script is safe to be destroyed and re-injected on navigation —
-// it restores its state from chrome.storage.local on each load.
+// SyncWatch Content Script v3
+// Responsibilities:
+//   1. DOM overlay UI
+//   2. Video detection & sync
+//   3. WebRTC peer connections (screen share HOST side) — moved here from offscreen
+//   ALL networking delegated to background.js via chrome.runtime.sendMessage.
 (function () {
   if (window.__syncwatch_loaded) return;
   window.__syncwatch_loaded = true;
@@ -14,6 +15,32 @@
   let chatOpen      = true;
   let currentUserId = null;
   let sharingActive = false;
+
+  // ── WebRTC state (host side) ──────────────────────────────
+  const ICE_SERVERS = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ]
+  };
+
+  let localStream = null;   // captured screen MediaStream
+  let rtcPeers    = {};     // { userId: RTCPeerConnection }
 
   // ═══════════════════════════════════════════════════════════
   // VIDEO DETECTION & SYNC
@@ -55,6 +82,170 @@
     if (state.playing && video.paused)   video.play().catch(() => {});
     else if (!state.playing && !video.paused) video.pause();
     setTimeout(() => { isSyncing = false; }, 700);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // WEBRTC — HOST SIDE (runs in content script page context)
+  // ═══════════════════════════════════════════════════════════
+
+  // Called by background after desktopCapture gives a streamId
+  async function startCapture(streamId, targetIds) {
+    try {
+      // getUserMedia with desktopCapture streamId — works in page context
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: streamId,
+            maxWidth: 1920,
+            maxHeight: 1080,
+            maxFrameRate: 30
+          }
+        }
+      });
+
+      // Try to add audio (optional)
+      try {
+        const audioStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: streamId
+            }
+          },
+          video: false
+        });
+        audioStream.getAudioTracks().forEach(t => localStream.addTrack(t));
+      } catch {}
+
+      // Watch for native "Stop sharing" button
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          stopCapture();
+          relay('CONTENT_SHARE_ENDED', {});
+        };
+      }
+
+      addChat('System', '📺 Screen captured! Connecting to guests…');
+
+      // Create offers for all existing room members
+      for (const id of (targetIds || [])) {
+        await createOffer(id);
+      }
+
+      addChat('System', `Offer sent to ${(targetIds || []).length} guest(s)`);
+    } catch (err) {
+      console.error('[SW Content] startCapture failed:', err);
+      addChat('Error', 'Screen capture failed: ' + err.message);
+      sharingActive = false;
+      updateShareBtn();
+      relay('CONTENT_SHARE_ENDED', {});
+    }
+  }
+
+  function stopCapture() {
+    if (localStream) {
+      localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+    }
+    Object.keys(rtcPeers).forEach(id => closePeer(id));
+  }
+
+  async function createOffer(targetId) {
+    const pc = getOrCreatePeer(targetId);
+
+    if (localStream) {
+      localStream.getTracks().forEach(t => {
+        const senders = pc.getSenders().map(s => s.track);
+        if (!senders.includes(t)) pc.addTrack(t, localStream);
+      });
+    }
+
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      relay('CONTENT_SIGNAL', { targetId, signalData: { offer } });
+      console.log('[SW Content] Offer created for', targetId);
+    } catch (e) {
+      console.error('[SW Content] createOffer error:', e);
+    }
+  }
+
+  async function handleSignal(senderId, signalData) {
+    const pc = getOrCreatePeer(senderId);
+
+    try {
+      if (signalData.offer) {
+        // Guest → host: this shouldn't happen normally (host only sends offers)
+        await pc.setRemoteDescription(new RTCSessionDescription(signalData.offer));
+        if (localStream) {
+          localStream.getTracks().forEach(t => {
+            const senders = pc.getSenders().map(s => s.track);
+            if (!senders.includes(t)) pc.addTrack(t, localStream);
+          });
+        }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        relay('CONTENT_SIGNAL', { targetId: senderId, signalData: { answer } });
+        drainIceQueue(pc);
+
+      } else if (signalData.answer) {
+        await pc.setRemoteDescription(new RTCSessionDescription(signalData.answer));
+        drainIceQueue(pc);
+
+      } else if (signalData.candidate) {
+        const ice = new RTCIceCandidate(signalData.candidate);
+        if (pc.remoteDescription?.type) {
+          pc.addIceCandidate(ice).catch(() => {});
+        } else {
+          pc._iceQueue = pc._iceQueue || [];
+          pc._iceQueue.push(ice);
+        }
+      }
+    } catch (e) {
+      console.error('[SW Content] handleSignal error:', e);
+    }
+  }
+
+  function getOrCreatePeer(peerId) {
+    if (rtcPeers[peerId]) return rtcPeers[peerId];
+
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    pc._iceQueue = [];
+    rtcPeers[peerId] = pc;
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        relay('CONTENT_SIGNAL', { targetId: peerId, signalData: { candidate: e.candidate } });
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[SW Content] ICE ${peerId}: ${pc.iceConnectionState}`);
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log(`[SW Content] Peer ${peerId}: ${pc.connectionState}`);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        closePeer(peerId);
+      }
+    };
+
+    return pc;
+  }
+
+  function closePeer(peerId) {
+    if (!rtcPeers[peerId]) return;
+    try { rtcPeers[peerId].close(); } catch {}
+    delete rtcPeers[peerId];
+  }
+
+  function drainIceQueue(pc) {
+    if (!pc._iceQueue?.length) return;
+    pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+    pc._iceQueue = [];
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -111,6 +302,7 @@
         sharingActive = false;
         updateShareBtn();
         addChat('System', 'Screen sharing stopped');
+        stopCapture();
         return false;
 
       case 'BG_STATUS':
@@ -121,6 +313,9 @@
         setDot('#475569');
         setStatus('Idle');
         addChat('System', 'Left room');
+        stopCapture();
+        sharingActive = false;
+        updateShareBtn();
         return false;
 
       case 'BG_ERROR':
@@ -129,7 +324,32 @@
         return false;
 
       case 'BG_MEMBER_COUNT':
-        // Could reflect in overlay title — optional enhancement
+        return false;
+
+      case 'BG_PEER_LEFT':
+        closePeer(msg.peerId);
+        return false;
+
+      // Background found a desktopCapture streamId for us — start WebRTC capture here
+      case 'BG_START_CAPTURE':
+        startCapture(msg.streamId, msg.targetIds || []);
+        return false;
+
+      // Background tells us to stop capture (e.g., leave room)
+      case 'BG_STOP_CAPTURE':
+        stopCapture();
+        return false;
+
+      // Background relays signal from guest → handle it in our WebRTC code
+      case 'BG_SIGNAL':
+        handleSignal(msg.senderId, msg.signalData);
+        return false;
+
+      // Background tells us to create new offers for new guests
+      case 'BG_CREATE_OFFERS':
+        if (localStream && msg.targetIds) {
+          msg.targetIds.forEach(id => createOffer(id));
+        }
         return false;
     }
     return false;
@@ -246,7 +466,6 @@
     `;
     document.body.appendChild(root);
 
-    // Wire up UI
     document.getElementById('_sw_toggle').addEventListener('click', toggleChat);
     document.getElementById('_sw_share_btn').addEventListener('click', handleShareClick);
     document.getElementById('_sw_close_btn').addEventListener('click', () => { root.style.display = 'none'; });
@@ -264,7 +483,6 @@
     const root = document.getElementById('_sw_root');
     if (root) root.style.display = '';
     if (rId) setStatus('Room: ' + rId);
-    // Hydrate chat from storage
     chrome.storage.local.get('chatHistory', ({ chatHistory }) => {
       if (chatHistory?.length) chatHistory.slice(-60).forEach(m => addChat(m.author, m.text, false));
     });
@@ -276,15 +494,20 @@
       relay('CONTENT_STOP_SHARE');
       sharingActive = false;
       updateShareBtn();
+      stopCapture();
       return;
     }
     addChat('System', 'Opening screen share picker…');
     const res = await chrome.runtime.sendMessage({ type: 'CONTENT_START_SHARE' });
     if (res?.ok) {
+      // Background will send BG_START_CAPTURE message with streamId when user picks
+      addChat('System', 'Screen picker opened — select what to share…');
       sharingActive = true;
       updateShareBtn();
     } else {
       addChat('Error', 'Share failed: ' + (res?.error || 'Permission denied'));
+      sharingActive = false;
+      updateShareBtn();
     }
   }
 
@@ -389,7 +612,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // AUTO-INIT: Restore state from storage on every page load
+  // AUTO-INIT
   // ═══════════════════════════════════════════════════════════
   injectOverlay();
 

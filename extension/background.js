@@ -1,21 +1,20 @@
-// SyncWatch - Background Service Worker v2 (MV3)
-// WebSocket + Offscreen doc (WebRTC) both managed here.
-// Content.js is demoted to pure DOM/overlay duties only.
+// SyncWatch - Background Service Worker v3 (MV3)
+// WebSocket managed here. WebRTC is NOW in content.js (page context) to avoid
+// the fragile offscreen→background relay chain.
 'use strict';
 
-const WS_URL      = 'wss://syncwatch-o4za.onrender.com';
-const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html');
+const WS_URL = 'wss://syncwatch-o4za.onrender.com';
 
 // ── Runtime state ─────────────────────────────────────────
-let ws                = null;
-let roomId            = null;
-let userId            = null;
-let connected         = false;
-let isSharing         = false;
-let roomUsers         = new Set();
-let wsReconnectTimer  = null;
-let heartbeatTimer    = null;
-let syncTimer         = null;
+let ws               = null;
+let roomId           = null;
+let userId           = null;
+let connected        = false;
+let isSharing        = false;
+let roomUsers        = new Set();
+let wsReconnectTimer = null;
+let heartbeatTimer   = null;
+let syncTimer        = null;
 
 // ═══════════════════════════════════════════════════════════
 // WEBSOCKET
@@ -49,7 +48,6 @@ function wsConnect() {
     setStorage({ wsConnected: false });
     broadcastTabs({ type: 'BG_STATUS', connected: false });
     if (roomId) {
-      // Auto-reconnect while still in a room
       wsReconnectTimer = setTimeout(wsConnect, 3000);
     }
   };
@@ -84,9 +82,9 @@ function handleServerMsg(msg) {
       setStorage({ userId, memberCount: msg.memberCount, connected: true });
       broadcastTabs({ type: 'BG_JOINED', state: msg.state, roomId, userId, memberCount: msg.memberCount });
       broadcastTabs({ type: 'BG_CHAT', author: 'System', text: `You joined · ${msg.memberCount} ${msg.memberCount === 1 ? 'person' : 'people'} watching` });
-      // If already sharing, offer to existing members
+      // If already sharing, tell content script to offer to existing members
       if (isSharing && msg.otherUsers?.length) {
-        msg.otherUsers.forEach(uid => msgOffscreen({ type: 'CREATE_OFFER', targetId: uid }));
+        broadcastToContentScripts({ type: 'BG_CREATE_OFFERS', targetIds: msg.otherUsers });
       }
       break;
     }
@@ -120,20 +118,23 @@ function handleServerMsg(msg) {
       setStorage({ memberCount: msg.memberCount });
       broadcastTabs({ type: 'BG_MEMBER_COUNT', count: msg.memberCount });
       broadcastTabs({ type: 'BG_CHAT', author: 'System', text: `${msg.userId} joined · ${msg.memberCount} watching` });
-      if (isSharing) msgOffscreen({ type: 'CREATE_OFFER', targetId: msg.userId });
+      // If host is sharing, content script should create offer for new user
+      if (isSharing) {
+        broadcastToContentScripts({ type: 'BG_CREATE_OFFERS', targetIds: [msg.userId] });
+      }
       break;
 
     case 'user_left':
       roomUsers.delete(msg.userId);
       setStorage({ memberCount: msg.memberCount });
-      msgOffscreen({ type: 'PEER_LEFT', peerId: msg.userId });
+      broadcastTabs({ type: 'BG_PEER_LEFT', peerId: msg.userId });
       broadcastTabs({ type: 'BG_MEMBER_COUNT', count: msg.memberCount });
       broadcastTabs({ type: 'BG_CHAT', author: 'System', text: `${msg.userId} left · ${msg.memberCount} watching` });
       break;
 
     case 'signal':
-      // Route WebRTC signal to offscreen doc
-      msgOffscreen({ type: 'SIGNAL', senderId: msg.senderId, signalData: msg.signalData });
+      // Route WebRTC signal from server → content script (which owns RTCPeerConnection)
+      broadcastToContentScripts({ type: 'BG_SIGNAL', senderId: msg.senderId, signalData: msg.signalData });
       break;
 
     case 'heartbeat_ack':
@@ -146,63 +147,43 @@ function handleServerMsg(msg) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// OFFSCREEN DOCUMENT (WebRTC lives here)
-// ═══════════════════════════════════════════════════════════
-async function ensureOffscreen() {
-  try {
-    const existing = await chrome.offscreen.hasDocument();
-    if (existing) return;
-  } catch {}
-  try {
-    await chrome.offscreen.createDocument({
-      url: OFFSCREEN_URL,
-      reasons: ['USER_MEDIA'],
-      justification: 'SyncWatch WebRTC peer connections for screen share'
-    });
-    await sleep(400); // Let it initialize
-  } catch (e) {
-    console.warn('[BG] Offscreen create failed:', e.message);
-  }
-}
-
-async function destroyOffscreen() {
-  try { await chrome.offscreen.closeDocument(); } catch {}
-}
-
-function msgOffscreen(payload) {
-  chrome.runtime.sendMessage({ _offscreen: true, ...payload }).catch(() => {});
-}
-
-// ═══════════════════════════════════════════════════════════
-// SCREEN SHARE (desktopCapture → offscreen streamId)
+// SCREEN SHARE — desktopCapture picker runs in BG,
+// streamId is sent to content.js which owns WebRTC
 // ═══════════════════════════════════════════════════════════
 function startScreenShare(requestingTabId) {
   return new Promise((resolve, reject) => {
-    // Build sources list
+    // NOTE: do NOT pass targetTab (second param) — causes silent failures on some Chrome versions
     chrome.desktopCapture.chooseDesktopMedia(
       ['screen', 'window', 'tab'],
-      requestingTabId ? { id: requestingTabId, index: 0 } : undefined,
-      async (streamId) => {
-        if (!streamId) return reject(new Error('User cancelled'));
-        try {
-          await ensureOffscreen();
-          msgOffscreen({ type: 'START_CAPTURE', streamId, targetIds: [...roomUsers] });
-          isSharing = true;
-          setStorage({ isSharing: true });
-          broadcastTabs({ type: 'BG_SHARE_STARTED' });
-          resolve({ ok: true });
-        } catch (e) {
-          reject(e);
+      (streamId) => {
+        if (!streamId) return reject(new Error('User cancelled or permission denied'));
+
+        isSharing = true;
+        setStorage({ isSharing: true });
+
+        // Send streamId to the requesting tab's content script so it can call getUserMedia
+        if (requestingTabId) {
+          chrome.tabs.sendMessage(requestingTabId, {
+            type: 'BG_START_CAPTURE',
+            streamId,
+            targetIds: [...roomUsers]
+          }).catch(err => {
+            console.error('[BG] Failed to send streamId to content script:', err);
+          });
         }
+
+        broadcastTabs({ type: 'BG_SHARE_STARTED' });
+        resolve({ ok: true });
       }
     );
   });
 }
 
 function stopScreenShare() {
-  msgOffscreen({ type: 'STOP_CAPTURE' });
   isSharing = false;
   setStorage({ isSharing: false });
+  // Tell content script to stop its WebRTC and media stream
+  broadcastToContentScripts({ type: 'BG_STOP_CAPTURE' });
   broadcastTabs({ type: 'BG_SHARE_STOPPED' });
 }
 
@@ -210,18 +191,14 @@ function stopScreenShare() {
 // ROOM OPERATIONS
 // ═══════════════════════════════════════════════════════════
 async function joinRoom(rId) {
-  // Clean up existing state
   wsDisconnect();
   stopScreenShare();
-  await destroyOffscreen();
 
   roomId = rId.toUpperCase();
   await chrome.storage.local.set({ sw_room: roomId, chatHistory: [], connected: false, isSharing: false });
 
-  // Start connection
   wsConnect();
 
-  // Inject and show overlay on active tab
   const tab = await getActiveTab();
   if (tab && isInjectableUrl(tab.url)) {
     await ensureContentScript(tab.id);
@@ -232,7 +209,6 @@ async function joinRoom(rId) {
 async function leaveRoom() {
   wsDisconnect();
   stopScreenShare();
-  await destroyOffscreen();
   await chrome.storage.local.set({ sw_room: null, chatHistory: [], connected: false, isSharing: false, memberCount: 0 });
   broadcastTabs({ type: 'BG_LEFT_ROOM' });
 }
@@ -242,19 +218,12 @@ async function leaveRoom() {
 // ═══════════════════════════════════════════════════════════
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // ── Messages from offscreen doc ──
-  if (msg._offscreen_reply) {
-    handleOffscreenReply(msg);
-    return false;
-  }
-
-  // ── Relay from popup (legacy wrapper) ──
+  // ── Relay from popup ──
   if (msg.type === 'RELAY_TO_CONTENT') {
     handleRelay(msg.payload, sender, sendResponse);
     return true;
   }
 
-  // ── From content.js ──
   switch (msg.type) {
     case 'ping':
       sendResponse({ alive: true });
@@ -296,34 +265,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ connected, roomId, userId, isSharing, hasVideo: true });
       return false;
 
-    // ── Offscreen doc replying back to background ──
-    case 'OFFSCREEN_SIGNAL':
+    // Content script forwards WebRTC signals to server via BG
+    case 'CONTENT_SIGNAL':
       wsSend({ type: 'signal', targetId: msg.targetId, signalData: msg.signalData });
       return false;
 
-    case 'OFFSCREEN_SHARE_ENDED':
+    case 'CONTENT_SHARE_ENDED':
       isSharing = false;
       setStorage({ isSharing: false });
       broadcastTabs({ type: 'BG_SHARE_STOPPED' });
-      return false;
-
-    case 'OFFSCREEN_READY':
-      console.log('[BG] Offscreen doc ready');
       return false;
   }
 
   return false;
 });
-
-function handleOffscreenReply(msg) {
-  if (msg.type === 'OFFSCREEN_SIGNAL') {
-    wsSend({ type: 'signal', targetId: msg.targetId, signalData: msg.signalData });
-  } else if (msg.type === 'OFFSCREEN_SHARE_ENDED') {
-    isSharing = false;
-    setStorage({ isSharing: false });
-    broadcastTabs({ type: 'BG_SHARE_STOPPED' });
-  }
-}
 
 async function handleRelay(payload, sender, sendResponse) {
   if (!payload) return sendResponse({ ok: false, error: 'no payload' });
@@ -348,14 +303,13 @@ async function handleRelay(payload, sender, sendResponse) {
       break;
 
     default:
-      // Fall through to content script injection for unknown relay types
       await relayToContentScript(payload, sender, sendResponse);
   }
 }
 
 async function relayToContentScript(payload, sender, sendResponse) {
   const tab = await getActiveTab();
-  if (!tab) return sendResponse({ ok: false, error: 'no_tab', hint: 'No active tab' });
+  if (!tab) return sendResponse({ ok: false, error: 'no_tab' });
   if (!isInjectableUrl(tab.url)) return sendResponse({ ok: false, error: 'bad_page', hint: 'Navigate to a video page first.' });
   const inject = await ensureContentScript(tab.id);
   if (!inject.ok) return sendResponse({ ok: false, error: 'inject_failed', hint: inject.error });
@@ -402,6 +356,17 @@ function broadcastTabs(msg) {
   });
 }
 
+// Only send to tabs that have our content script loaded
+function broadcastToContentScripts(msg) {
+  chrome.tabs.query({}, tabs => {
+    tabs.forEach(tab => {
+      if (tab.id && isInjectableUrl(tab.url)) {
+        chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
+      }
+    });
+  });
+}
+
 function setStorage(data) {
   chrome.storage.local.set(data).catch(() => {});
 }
@@ -425,11 +390,10 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // INIT
 // ═══════════════════════════════════════════════════════════
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('[SyncWatch] Installed v2.0');
+  console.log('[SyncWatch] Installed v3.0');
   chrome.storage.local.set({ connected: false, roomId: null, chatHistory: [], isSharing: false });
 });
 
-// Restore room on service-worker restart
 (async () => {
   const { sw_room, wsConnected } = await chrome.storage.local.get(['sw_room', 'wsConnected']);
   if (sw_room && wsConnected) {
