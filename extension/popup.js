@@ -191,10 +191,12 @@ $('btn-copy').addEventListener('click', () => {
 // ── Share Invite ──────────────────────────────────────────
 $('btn-share').addEventListener('click', () => {
   if (!activeRoomId) return;
-  const message = `🎬 Let's watch together!\nJoin my SyncWatch room.\n\nRoom ID: ${activeRoomId}\n\n1. Download extension\n2. Open extension, enter ID and join!`;
+  const webLink = `https://syncwatch-o4za.onrender.com/join/${activeRoomId}`;
+  const message = `🎬 Let's watch together!\n\nJoin my SyncWatch room:\n${webLink}\n\n(No extension required for desktop browsers)`;
   
   navigator.clipboard.writeText(message)
     .then(() => {
+
       const btn = $('btn-share');
       const originalText = btn.innerHTML;
       btn.textContent = 'Invite Copied! ✅';

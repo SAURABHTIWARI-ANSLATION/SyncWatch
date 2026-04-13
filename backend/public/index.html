@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SyncWatch Live | Watch Together</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" type="image/png" href="https://img.icons8.com/color/48/000000/movie-projector.png">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">S</div>
+      <div class="brand">SyncWatch <span>Live</span></div>
+      <div id="room-badge" class="room-badge hidden">
+        Room: <strong id="room-id-display">...</strong>
+      </div>
+      <div id="status-dot" class="status-dot offline"></div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="container">
+      <!-- Player View (Active) -->
+      <section id="view-player" class="hidden">
+        <div class="player-wrapper">
+          <div id="yt-player"></div>
+          <!-- Overlay for syncing status -->
+          <div id="sync-overlay" class="sync-overlay hidden">
+            <span class="loader"></span>
+            Syncing...
+          </div>
+        </div>
+
+        <!-- Chat & Members Bar -->
+        <aside class="sidebar">
+          <div class="sidebar-header">
+            <h3>Live Chat</h3>
+            <span id="member-count">0 watching</span>
+          </div>
+          <div id="chat-messages" class="chat-messages">
+            <div class="msg system">Welcome to SyncWatch Live!</div>
+          </div>
+          <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Type a message..." maxlength="300">
+            <button id="chat-send">Send</button>
+          </div>
+        </aside>
+      </section>
+
+      <!-- Idle/Join View -->
+      <section id="view-idle">
+        <div class="hero">
+          <h1>Join the party! 🎬</h1>
+          <p>You've been invited to watch a video in real-time sync.</p>
+          
+          <div class="join-card">
+            <div class="join-label">Room Code</div>
+            <input type="text" id="inp-room-id" placeholder="Enter Room ID" readonly>
+            <button id="btn-join" class="btn btn-primary">Join Sync Now</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      No extension required. SyncWatch Live is experimental.
+    </footer>
+  </div>
+
+  <!-- Loading Screen -->
+  <div id="loading-screen" class="loading-screen">
+    <div class="loader-lg"></div>
+    <p>Connecting to SyncWatch...</p>
+  </div>
+
+  <!-- YT API -->
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="/script.js"></script>
+</body>
+</html>

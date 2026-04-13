@@ -1,5 +1,7 @@
 const express = require('express');
 const http = require('http');
+const path = require('path');
+
 const { WebSocketServer } = require('ws');
 const { v4: uuidv4 } = require('uuid');
 
@@ -19,6 +21,8 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
 
 // Health check
 app.get('/', (req, res) => {
@@ -41,6 +45,12 @@ app.get('/room/:id', (req, res) => {
   const id = req.params.id.toUpperCase();
   res.json({ exists: rooms.has(id) });
 });
+
+// Join route for web client
+app.get('/join/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 
 // Utility: send to single client
 function send(ws, msg) {
