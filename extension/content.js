@@ -76,12 +76,15 @@
 
   function applySync(state) {
     if (!video || !state) return;
+    if (isSyncing) return; // ignore if already syncing
     isSyncing = true;
     const diff = Math.abs(video.currentTime - state.time);
-    if (diff > 0.8) video.currentTime = state.time;
+    if (diff > 1.2) { // slightly wider threshold for Mixes
+      video.currentTime = state.time;
+    }
     if (state.playing && video.paused)   video.play().catch(() => {});
     else if (!state.playing && !video.paused) video.pause();
-    setTimeout(() => { isSyncing = false; }, 700);
+    setTimeout(() => { isSyncing = false; }, 800);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -90,10 +93,11 @@
 
   // Called by background after desktopCapture gives a streamId
   async function startCapture(streamId, targetIds) {
+    console.log('[SW Content] Starting capture with streamId:', streamId);
     try {
       // getUserMedia with desktopCapture streamId — works in page context
       localStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
+        audio: false, 
         video: {
           mandatory: {
             chromeMediaSource: 'desktop',

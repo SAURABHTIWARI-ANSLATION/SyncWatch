@@ -164,9 +164,12 @@ async function startScreenShare(requestingTabId) {
   }
 
   return new Promise((resolve, reject) => {
+    // PASSING null instead of targetTab:
+    // This is the fix for RESULT_CODE_KILLED_BAD_MESSAGE crash.
+    // In MV3, passing the full Tab object from tabs.get often triggers IPC violations.
     chrome.desktopCapture.chooseDesktopMedia(
       ['screen', 'window', 'tab'],
-      targetTab,  // Required: full Tab object so Chrome can show the picker
+      null, 
       async (streamId) => {
         if (!streamId) return reject(new Error('Screen share cancelled'));
 
