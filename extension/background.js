@@ -287,7 +287,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
 
     case 'CONTENT_START_SHARE': {
-      const tabId = sender.tab?.id;
+      let tabId = sender.tab?.id;
+      // Fallback if sender.tab is missing in some contexts
+      if (!tabId) {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        tabId = activeTab?.id;
+      }
+
+      if (!tabId) {
+        console.error("[BG] No valid tabId for screen share");
+        sendResponse({ ok: false, error: "No valid tab found" });
+        return true;
+      }
+
       startScreenShare(tabId)
         .then(() => sendResponse({ ok: true }))
         .catch(e => {
@@ -388,27 +400,13 @@ async function getActiveTab() {
 
 async function ensureContentScript(tabId) {
   try {
-    // 1. Check if tab still exists and has an injectable URL
-    const tab = await chrome.tabs.get(tabId);
-    if (!isInjectableUrl(tab.url)) return { ok: false, error: 'Non-injectable URL: ' + tab.url };
-
-    // 2. Try to ping existing content script
-    try {
-      const r = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
-      if (r?.alive) return { ok: true };
-    } catch { }
-
-    // 3. Inject content script into ALL frames to catch videos in iframes
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      files: ['content.js']
-    });
-
-    await sleep(400);
-    return { ok: true };
+    // Rely on manifest-declared content scripts (all_frames: true).
+    // Just verify the script is alive via ping.
+    const r = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
+    if (r?.alive) return { ok: true };
+    return { ok: false, error: 'Content script not responding. Refresh the page.' };
   } catch (e) {
-    console.error('[BG] Injection failed:', e.message);
-    return { ok: false, error: e.message };
+    return { ok: false, error: 'Content script connection failed.' };
   }
 }
 

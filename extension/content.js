@@ -371,7 +371,11 @@
   // RELAY HELPER
   // ═══════════════════════════════════════════════════════════
   function relay(type, extra = {}) {
-    chrome.runtime.sendMessage({ type, ...extra }).catch(() => { });
+    try {
+      chrome.runtime.sendMessage({ type, ...extra }).catch(() => { });
+    } catch (e) {
+      console.warn("[SW] Extension context invalidated (dead relay)");
+    }
   }
 
   // ═══════════════════════════════════════════════════════════
