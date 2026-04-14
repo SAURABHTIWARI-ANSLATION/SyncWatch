@@ -138,7 +138,7 @@ function injectOverlay() {
 
   const host = document.createElement('div');
   host.id = 'sw-overlay-host';
-  host.style.cssText = 'position:fixed;bottom:0;left:0;width:100%;height:56px;z-index:2147483647;pointer-events:none;';
+  host.style.cssText = 'position:fixed;bottom:0;left:0;width:100%;height:56px;z-index:2147483647;pointer-events:none;transition:height 0.2s;';
   document.body.appendChild(host);
 
   const shadow = host.attachShadow({ mode: 'open' });
@@ -199,6 +199,13 @@ function handleOverlayMessage(e) {
     case 'toggleMic':
       handleToggleMic(msg.state);
       break;
+    case 'toggleChatPanel': {
+      const host = document.getElementById('sw-overlay-host');
+      if (host) {
+        host.style.height = msg.open ? '400px' : '56px';
+      }
+      break;
+    }
   }
 }
 

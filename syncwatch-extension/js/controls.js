@@ -7,6 +7,7 @@ let chatOpen = false;
 let unreadCount = 0;
 let isSharing = false;
 let myRoomId = null;
+let myUserId = null;
 
 // ── Listen for messages FROM content script ───────────────────────
 window.addEventListener('message', e => {
@@ -16,6 +17,7 @@ window.addEventListener('message', e => {
   switch (msg.type) {
     case 'joined':
       myRoomId = msg.roomId;
+      myUserId = msg.userId;
       document.getElementById('room-id-lbl').textContent = msg.roomId || '--------';
       document.getElementById('member-count').textContent = msg.memberCount || 1;
       setConnected(true);
@@ -31,8 +33,10 @@ window.addEventListener('message', e => {
       break;
 
     case 'chat':
-      addMsg('user', msg.text, msg.userId);
-      if (!chatOpen) bumpUnread();
+      if (msg.userId !== myUserId) {
+        addMsg('user', msg.text, msg.userId);
+        if (!chatOpen) bumpUnread();
+      }
       break;
 
     case 'user_joined':
@@ -128,6 +132,10 @@ document.getElementById('btn-mic').addEventListener('click', () => {
 document.getElementById('btn-chat').addEventListener('click', () => {
   chatOpen = !chatOpen;
   document.getElementById('chat-panel').classList.toggle('open', chatOpen);
+  
+  // Tell parent (content script) to resize the iframe container
+  window.parent.postMessage({ swOverlay: 'toggleChatPanel', open: chatOpen }, '*');
+
   if (chatOpen) {
     unreadCount = 0;
     document.getElementById('chat-badge').textContent = '0';

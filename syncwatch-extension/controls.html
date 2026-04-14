@@ -17,13 +17,16 @@
 
 html, body {
   width: 100%;
-  height: 56px;
-  overflow: hidden;
+  height: 100%;
+  overflow: visible;
   background: transparent;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 #bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -35,6 +38,7 @@ html, body {
   backdrop-filter: blur(12px);
   color: var(--text);
   font-size: 13px;
+  z-index: 1000;
 }
 
 /* Logo section */
