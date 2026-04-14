@@ -133,8 +133,11 @@ function applySeek(time) {
 
 // ── Controls overlay (iframe) ─────────────────────────────────────
 
+let fallbackTimeout = null;
+let overlayHandshakeReceived = false;
+
 function injectOverlay() {
-  if (overlayFrame) return;
+  if (document.getElementById('sw-overlay-host')) return;
 
   const host = document.createElement('div');
   host.id = 'sw-overlay-host';
@@ -143,18 +146,71 @@ function injectOverlay() {
 
   const shadow = host.attachShadow({ mode: 'open' });
   overlayFrame = document.createElement('iframe');
+  overlayFrame.id = 'sw-iframe';
   overlayFrame.src = chrome.runtime.getURL('controls.html');
   overlayFrame.style.cssText = 'width:100%;height:100%;border:none;pointer-events:auto;background:transparent;';
   shadow.appendChild(overlayFrame);
 
   window.addEventListener('message', handleOverlayMessage);
-  console.log('[SW Content] Overlay injected');
+  
+  // CSP Check: If iframe doesn't say "ready" in 2.5s, it's likely blocked by CSP
+  fallbackTimeout = setTimeout(() => {
+    if (!overlayHandshakeReceived) {
+      console.warn('[SW Content] Overlay iframe failed to load (likely CSP). Injecting fallback UI...');
+      injectFallbackUI(shadow);
+    }
+  }, 2500);
+
+  console.log('[SW Content] Overlay attempt injected');
+}
+
+function injectFallbackUI(shadow) {
+  if (!overlayFrame) return;
+  overlayFrame.remove();
+  overlayFrame = null;
+
+  const bar = document.createElement('div');
+  bar.id = 'sw-fallback-bar';
+  bar.innerHTML = `
+    <style>
+      #sw-fallback-bar {
+        width: 100%; height: 100%; background: rgba(15, 23, 42, 0.95);
+        backdrop-filter: blur(8px); display: flex; align-items: center; 
+        justify-content: center; gap: 12px; pointer-events: auto;
+        border-top: 1px solid rgba(124, 159, 255, 0.2); color: #f8fafc;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      .btn {
+        background: rgba(124, 159, 255, 0.1); border: 1px solid rgba(124, 159, 255, 0.2);
+        color: #7c9fff; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+        font-size: 13px; font-weight: 600; transition: all 0.2s;
+      }
+      .btn:hover { background: rgba(124, 159, 255, 0.2); }
+      .btn.red { color: #f43f5e; border-color: rgba(244, 63, 94, 0.2); }
+      .status { font-size: 11px; color: #94a3b8; margin-right: 10px; }
+    </style>
+    <div class="status">SyncWatch Fallback Mode (CSP)</div>
+    <button class="btn" id="fb-play">Play</button>
+    <button class="btn" id="fb-pause">Pause</button>
+    <button class="btn" id="fb-sync">Sync Now</button>
+    <button class="btn" id="fb-share">Share Screen</button>
+    <button class="btn red" id="fb-leave">Leave</button>
+  `;
+  shadow.appendChild(bar);
+
+  bar.querySelector('#fb-play').onclick = () => handleOverlayMessage({ data: { swOverlay: 'play' } });
+  bar.querySelector('#fb-pause').onclick = () => handleOverlayMessage({ data: { swOverlay: 'pause' } });
+  bar.querySelector('#fb-sync').onclick = () => handleOverlayMessage({ data: { swOverlay: 'syncNow' } });
+  bar.querySelector('#fb-share').onclick = () => handleOverlayMessage({ data: { swOverlay: 'shareScreen' } });
+  bar.querySelector('#fb-leave').onclick = () => { if(confirm('Leave room?')) handleOverlayMessage({ data: { swOverlay: 'leave' } }); };
 }
 
 function removeOverlay() {
   const host = document.getElementById('sw-overlay-host');
   if (host) host.remove();
   overlayFrame = null;
+  overlayHandshakeReceived = false;
+  if (fallbackTimeout) clearTimeout(fallbackTimeout);
   window.removeEventListener('message', handleOverlayMessage);
 }
 
@@ -167,6 +223,13 @@ function postToOverlay(data) {
 function handleOverlayMessage(e) {
   const msg = e.data;
   if (!msg || !msg.swOverlay) return;
+
+  if (msg.swOverlay === 'ready') {
+    overlayHandshakeReceived = true;
+    if (fallbackTimeout) clearTimeout(fallbackTimeout);
+    console.log('[SW Content] Overlay iframe confirmed ready');
+    return;
+  }
 
   switch (msg.swOverlay) {
     case 'play':
@@ -399,39 +462,24 @@ async function handleToggleMic(state) {
 
 // ── Screen Share — HOST (Native API) ─────────────────────────────
 
-function startScreenShare() {
-  chrome.runtime.sendMessage({ action: 'requestScreenShare' });
+async function startScreenShare() {
+  try {
+    // Attempt getDisplayMedia directly in content script (requires user gesture)
+    // Most modern browsers/Chrome versions allow this in content scripts if triggered by click
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true
+    });
+    handleScreenShareStream(stream);
+  } catch (err) {
+    console.warn('[SW Content] getDisplayMedia failed, falling back to background capture:', err);
+    // Fallback: Ask background script (this may fail if no gesture)
+    chrome.runtime.sendMessage({ action: 'requestScreenShare' });
+  }
 }
 
-async function handleScreenShareGranted(streamId) {
-  try {
-    // Attempt to capture with audio First
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
-      },
-      video: {
-        mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
-      }
-    });
-  } catch (err) {
-    // Fallback if audio fails (e.g. sharing Window instead of Tab on Mac)
-    console.warn('[SW Content] Capture with audio failed, retrying video only...', err);
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
-        }
-      });
-      postToOverlay({ type: 'chat', userId: 'System', text: '⚠ Notice: No audio captured! To share audio, you MUST select "Share Tab" instead of Window/Screen.' });
-    } catch (fallbackErr) {
-      console.error('[SW Content] Fallback screen share error:', fallbackErr);
-      postToOverlay({ type: 'screenShareError', msg: 'Capture permission denied or failed.' });
-      return;
-    }
-  }
-
+async function handleScreenShareStream(stream) {
+  localStream = stream;
   localStream.getTracks().forEach(track => {
     track.onended = () => stopScreenShare();
   });
@@ -444,6 +492,35 @@ async function handleScreenShareGranted(streamId) {
   }
   for (const viewerId of viewers) {
     await createPeerForViewer(viewerId);
+  }
+}
+
+async function handleScreenShareGranted(streamId) {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
+      },
+      video: {
+        mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
+      }
+    });
+    handleScreenShareStream(stream);
+  } catch (err) {
+    console.warn('[SW Content] Capture with audio failed, retrying video only...', err);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
+        }
+      });
+      handleScreenShareStream(stream);
+      postToOverlay({ type: 'chat', userId: 'System', text: '⚠ Notice: No audio captured! To share audio, you MUST select "Share Tab" instead of Window/Screen.' });
+    } catch (fallbackErr) {
+      console.error('[SW Content] Fallback screen share error:', fallbackErr);
+      postToOverlay({ type: 'screenShareError', msg: 'Capture permission denied or failed.' });
+    }
   }
 }
 

@@ -34,7 +34,8 @@
     "scripting",
     "tabs",
     "desktopCapture",
-    "webNavigation"
+    "webNavigation",
+    "offscreen"
   ],
   "host_permissions": ["<all_urls>"],
   "web_accessible_resources": [

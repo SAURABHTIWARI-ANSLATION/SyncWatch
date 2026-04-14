@@ -195,6 +195,9 @@ document.getElementById('room-id-lbl').addEventListener('click', () => {
   });
 });
 
+// Send handshake to content script to confirm load (CSP check)
+window.parent.postMessage({ swOverlay: 'ready' }, '*');
+
 // ── Chat message helper ───────────────────────────────────────────
 // FIX v1.2: stable scroll — don't hijack when user is reading history,
 //           compensate scroll when trimming old messages from top.
@@ -281,6 +284,7 @@ function showCopyToast() {
 }
 
 function esc(str) {
+  if (!str) return '';
   return String(str).replace(/[&<>'"]/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
   );
