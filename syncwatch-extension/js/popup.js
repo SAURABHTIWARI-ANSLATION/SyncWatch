@@ -6,6 +6,11 @@ const BACKEND = 'https://syncwatch-64jv.onrender.com';
 let currentTabId   = null;
 let currentTabUrl  = null;
 let currentRoomId  = null;
+let persistentUserId = localStorage.getItem('sw_userid') || (()=>{
+  const id = crypto.randomUUID();
+  localStorage.setItem('sw_userid', id);
+  return id;
+})();
 
 // ── Init: get current tab info ────────────────────────────────────
 chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
@@ -71,7 +76,7 @@ document.getElementById('btn-create').addEventListener('click', () => {
   clearError();
   setLoading(true, 'btn-create', 'Creating...');
 
-  chrome.runtime.sendMessage({ action: 'createRoom', tabId: currentTabId }, resp => {
+  chrome.runtime.sendMessage({ action: 'createRoom', tabId: currentTabId, userId: persistentUserId }, resp => {
     if (resp.ok) {
       currentRoomId = resp.roomId;
       showInviteBox(resp.roomId);
@@ -96,7 +101,7 @@ document.getElementById('btn-join').addEventListener('click', () => {
   clearError();
   setLoading(true, 'btn-join', 'Joining...');
 
-  chrome.runtime.sendMessage({ action: 'joinRoom', tabId: currentTabId, roomId }, resp => {
+  chrome.runtime.sendMessage({ action: 'joinRoom', tabId: currentTabId, roomId, userId: persistentUserId }, resp => {
     if (resp.ok) {
       currentRoomId = resp.roomId;
       // Banner will appear on 'joined' message

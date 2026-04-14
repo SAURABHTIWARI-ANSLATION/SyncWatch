@@ -34,8 +34,9 @@ function connectWS(tabId, roomId, isHost) {
 
   ws.onopen = () => {
     console.log(`[SW] WS open tab=${tabId} room=${roomId}`);
-    const hostSecret = db[tabId] ? db[tabId].hostSecret : null;
-    ws.send(JSON.stringify({ type: 'join', roomId, hostSecret }));
+    const hostId = db[tabId] ? db[tabId].hostId : null;
+    const userId = db[tabId] ? db[tabId].persistentUserId : null;
+    ws.send(JSON.stringify({ type: 'join', roomId, userId }));
   };
 
   ws.onmessage = e => {
@@ -164,9 +165,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(r => r.json())
       .then(data => {
         const roomId = data.roomId;
-        const hostSecret = data.hostSecret;
+        const hostId = data.hostId;
         const tabId = msg.tabId;
-        db[tabId] = { roomId, hostSecret, isHost: true, userId: null, memberCount: 1, otherUsers: [] };
+        db[tabId] = { roomId, hostId, persistentUserId: msg.userId, isHost: true, userId: null, memberCount: 1, otherUsers: [] };
         saveDb();
         connectWS(tabId, roomId, true);
         sendResponse({ ok: true, roomId });
@@ -186,7 +187,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: `Room "${roomId}" not found or expired.` });
           return;
         }
-        db[tabId] = { roomId, isHost: false, userId: null, memberCount: 0, otherUsers: [] };
+        db[tabId] = { roomId, persistentUserId: msg.userId, isHost: false, userId: null, memberCount: 0, otherUsers: [] };
         saveDb();
         connectWS(tabId, roomId, false);
         sendResponse({ ok: true, roomId });

@@ -3,7 +3,12 @@
 
 let socket = null;
 let roomId = null;
-let userId = null;
+let userId = null; // internal websocket assigned user id (e.g. "Host" or "Guest-ABCD")
+let persistentUserId = localStorage.getItem('sw_userid') || (()=>{
+  const id = crypto.randomUUID();
+  localStorage.setItem('sw_userid', id);
+  return id;
+})();
 let streamConnected = false;
 
 // Retry state for Render.com cold-start
@@ -15,7 +20,10 @@ const RETRY_DELAYS = [2000, 3000, 5000, 8000, 10000, 15000, 20000, 30000];
 let rtcPeers = {};
 let knownPeers = new Set();
 let localStream = null;
+let localMicStream = null;
 let isWebClientSharing = false;
+let isMicOn = false;
+let unreadCount = 0;
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -62,7 +70,7 @@ function startSync() {
     clearTimeout(connectTimeout);
     retryCount = 0;
     setStatus('online');
-    send({ type: 'join', roomId });
+    send({ type: 'join', roomId, userId: persistentUserId });
   };
 
   socket.onmessage = e => {
@@ -133,6 +141,10 @@ function handleMessage(msg) {
       document.getElementById('loading-screen').classList.add('hidden');
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       document.getElementById('btn-web-share').classList.remove('hidden');
+
+      // Set user label in chat
+      addChatMessage('System', `Connected as ${userId}`);
+
       knownPeers.clear();
       (msg.otherUsers || []).forEach(id => knownPeers.add(id));
       showWaitingSplash();
@@ -305,6 +317,34 @@ async function createPeerForViewer(viewerId) {
   pc._iceQueue = [];
 
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  if (localMicStream) {
+    localMicStream.getTracks().forEach(track => pc.addTrack(track, localMicStream));
+  }
+
+  pc.ontrack = e => {
+    // Viewer receiving tracks from Host (Screen or Mic)
+    if (!e.streams?.[0]) return;
+    if (e.track.kind === 'video') {
+       const remoteVid = document.getElementById('remote-stream');
+       if (remoteVid) {
+         remoteVid.srcObject = e.streams[0];
+         remoteVid.style.display = 'block';
+         remoteVid.muted = isWebClientSharing; // mute if we are the one sharing
+         remoteVid.play().catch(() => {});
+       }
+       hideWaitingSplash();
+    } else if (e.track.kind === 'audio') {
+       // Create an audio element for this peer if it doesn't exist
+       let aEl = document.getElementById(`audio-${viewerId}`);
+       if (!aEl) {
+         aEl = document.createElement('audio');
+         aEl.id = `audio-${viewerId}`;
+         aEl.autoplay = true;
+         document.body.appendChild(aEl);
+       }
+       aEl.srcObject = e.streams[0];
+    }
+  };
 
   pc.onicecandidate = e => {
     if (e.candidate) send({ type: 'signal', targetId: viewerId, signalData: { candidate: e.candidate } });
@@ -430,7 +470,94 @@ function sendChat() {
   send({ type: 'chat', text });
   addChatMessage('You', text);
   input.value = '';
+  resetUnread();
 }
+
+function resetUnread() {
+  unreadCount = 0;
+  const badge = document.getElementById('chat-badge');
+  if (badge) {
+    badge.textContent = '0';
+    badge.classList.add('hidden');
+  }
+}
+
+// Clear unread on scroll to bottom
+document.getElementById('chat-messages').addEventListener('scroll', e => {
+  const box = e.target;
+  const isAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 10;
+  if (isAtBottom && unreadCount > 0) resetUnread();
+});
+
+// ── Image compression & sizing logic ────────────────────────
+
+function compressImage(file, callback) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      const cvs = document.createElement('canvas');
+      const maxW = 500;
+      let w = img.width, h = img.height;
+      if (w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+      cvs.width = w; cvs.height = h;
+      cvs.getContext('2d').drawImage(img, 0, 0, w, h);
+      
+      // If file > 200KB, use higher compression or suggest external
+      const quality = file.size > 200000 ? 0.4 : 0.6;
+      callback(cvs.toDataURL('image/jpeg', quality));
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── Mic Logic for Web Client ─────────────────────────────────
+
+document.getElementById('btn-web-mic').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-web-mic');
+  if (isMicOn) {
+    if (localMicStream) {
+      localMicStream.getTracks().forEach(t => t.stop());
+      localMicStream = null;
+    }
+    isMicOn = false;
+    btn.style.color = 'var(--text-muted)';
+    btn.classList.remove('active');
+    addChatMessage('System', '🎤 Microphone muted.');
+  } else {
+    try {
+      localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      isMicOn = true;
+      btn.style.color = 'var(--green)';
+      btn.classList.add('active');
+      addChatMessage('System', '🎤 Microphone unmuted.');
+
+      // Patch into existing peers
+      for (const [peerId, pc] of Object.entries(rtcPeers)) {
+        localMicStream.getTracks().forEach(t => pc.addTrack(t, localMicStream));
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        send({ type: 'signal', targetId: peerId, signalData: { offer: pc.localDescription } });
+      }
+    } catch (e) {
+      alert('Could not access microphone: ' + e.message);
+    }
+  }
+});
+
+// ── Image Logic for Web Client ───────────────────────────────
+
+document.getElementById('btn-web-img').addEventListener('click', () => document.getElementById('file-web-img').click());
+document.getElementById('file-web-img').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  compressImage(file, (dataUri) => {
+    send({ type: 'chat', text: dataUri });
+    addChatMessage('You', dataUri);
+  });
+  e.target.value = '';
+});
 
 // FIX v1.2: proper chat scroll that doesn't hijack when user is reading old messages,
 // and compensates scroll position when old messages are trimmed from top.
@@ -449,11 +576,20 @@ function addChatMessage(author, text) {
     div.className = 'msg';
     const authorEl = document.createElement('span');
     authorEl.className = 'author';
-    authorEl.textContent = esc(author) + ':';
-    const textEl = document.createElement('span');
-    textEl.textContent = ' ' + text;
+    // Display "Host" instead of actual ID if it matches label
+    const displayAuthor = author === 'Host' ? 'Host' : (author === 'You' ? 'You' : author);
+    authorEl.textContent = esc(displayAuthor) + ':';
     div.appendChild(authorEl);
-    div.appendChild(textEl);
+
+    if (typeof text === 'string' && text.startsWith('data:image/')) {
+       const img = document.createElement('img');
+       img.src = text;
+       div.appendChild(img);
+    } else {
+       const textEl = document.createElement('span');
+       textEl.textContent = ' ' + text;
+       div.appendChild(textEl);
+    }
   }
 
   box.appendChild(div);
@@ -474,6 +610,17 @@ function addChatMessage(author, text) {
   if (isNearBottom) {
     // Defer to next frame to avoid forced-reflow
     requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+    resetUnread();
+  } else {
+    // Increment unread if message from someone else
+    if (author !== 'You' && author !== 'System') {
+      unreadCount++;
+      const badge = document.getElementById('chat-badge');
+      if (badge) {
+        badge.textContent = unreadCount > 9 ? '9+' : unreadCount;
+        badge.classList.remove('hidden');
+      }
+    }
   }
 }
 

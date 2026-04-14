@@ -32,14 +32,17 @@
         <!-- Chat & Members Bar -->
         <aside class="sidebar">
           <div class="sidebar-header">
-            <h3>Live Chat</h3>
+            <h3>Live Chat <span id="chat-badge" class="badge hidden">0</span></h3>
             <span id="member-count">0 watching</span>
           </div>
           <div id="chat-messages" class="chat-messages">
             <div class="msg system">Welcome to SyncWatch Live!</div>
           </div>
-          <div class="chat-input-row">
-            <input type="text" id="chat-input" placeholder="Type a message..." maxlength="300">
+          <div class="chat-input-row" style="display:flex; gap:6px; padding:10px;">
+            <button id="btn-web-mic" title="Toggle Mic" style="background:rgba(255,255,255,0.06); color:var(--muted); border:none; border-radius:6px; padding:0 10px; cursor:pointer; font-size:16px;">🎤</button>
+            <button id="btn-web-img" title="Send Image" style="background:rgba(255,255,255,0.06);border:none;border-radius:6px;padding:0 10px;cursor:pointer;font-size:14px;">📷</button>
+            <input type="file" id="file-web-img" accept="image/*" style="display:none">
+            <input type="text" id="chat-input" placeholder="Type a message..." maxlength="300" style="flex:1;">
             <button id="chat-send">Send</button>
           </div>
         </aside>

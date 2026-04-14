@@ -12,6 +12,12 @@ const wss = new WebSocketServer({ server });
 // In-memory room store
 const rooms = new Map();
 
+// Helper: mask guest name
+function getMaskedName(userId) {
+  if (!userId) return `Guest-${Math.floor(Math.random() * 9999)}`;
+  return `Guest-${userId.slice(0, 4).toUpperCase()}`;
+}
+
 // FIX: Auto-cleanup rooms that are empty for > 2 hours to prevent stale rooms
 // causing "2 watching" ghost count issues
 setInterval(() => {
@@ -44,15 +50,15 @@ app.get('/', (req, res) => {
 // Create a new room
 app.post('/room/create', (req, res) => {
   const roomId = uuidv4().replace(/-/g, '').slice(0, 8).toUpperCase();
-  const hostSecret = uuidv4();
+  const hostId = req.body.hostId || uuidv4(); // Use provided hostId if available
   rooms.set(roomId, {
-    hostSecret,
+    hostId,
     clients: new Set(),
     createdAt: Date.now(),
     state: { time: 0, playing: false, updatedAt: Date.now() }
   });
-  console.log(`[Room] Created: ${roomId}`);
-  res.json({ roomId, hostSecret });
+  console.log(`[Room] Created: ${roomId} by Host: ${hostId}`);
+  res.json({ roomId, hostId });
 });
 
 // Check if room exists
@@ -133,14 +139,14 @@ wss.on('connection', (ws, req) => {
         roomId = id;
         room.clients.add(ws);
 
-        // Assign Host identity if secret matches, else Guest
-        if (msg.hostSecret && msg.hostSecret === room.hostSecret) {
+        // Persistent Role assignment
+        const clientUserId = msg.userId || uuidv4();
+        if (clientUserId === room.hostId) {
           ws.wsUserId = 'Host';
         } else {
-          ws.wsUserId = `Guest-${uuidv4().slice(0, 4)}`;
+          ws.wsUserId = getMaskedName(clientUserId);
         }
         
-        // Ensure userId variable is updated to current ws state
         userId = ws.wsUserId;
 
         // Calculate elapsed time for live sync
