@@ -115,6 +115,15 @@ document.getElementById('btn-leave').addEventListener('click', () => {
   }
 });
 
+// Mic toggle
+let isMicOn = false;
+document.getElementById('btn-mic').addEventListener('click', () => {
+  isMicOn = !isMicOn;
+  const btn = document.getElementById('btn-mic');
+  btn.style.color = isMicOn ? 'var(--green)' : 'var(--muted)';
+  window.parent.postMessage({ swOverlay: 'toggleMic', state: isMicOn }, '*');
+});
+
 // Chat toggle
 document.getElementById('btn-chat').addEventListener('click', () => {
   chatOpen = !chatOpen;
@@ -130,9 +139,33 @@ document.getElementById('btn-chat').addEventListener('click', () => {
   }
 });
 
-// Chat send
 document.getElementById('chat-send').addEventListener('click', sendChat);
 document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+// Image send logic
+document.getElementById('btn-img').addEventListener('click', () => { document.getElementById('file-img').click(); });
+document.getElementById('file-img').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      const cvs = document.createElement('canvas');
+      const maxW = 500;
+      let w = img.width, h = img.height;
+      if (w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+      cvs.width = w; cvs.height = h;
+      cvs.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUri = cvs.toDataURL('image/jpeg', 0.6);
+      window.parent.postMessage({ swOverlay: 'chat', text: dataUri }, '*');
+      addMsg('user', dataUri, 'You');
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+});
 
 function sendChat() {
   const input = document.getElementById('chat-input');
@@ -175,10 +208,19 @@ function addMsg(type, text, author) {
     const a = document.createElement('span');
     a.className = 'author';
     a.textContent = esc(author || '?') + ':';
-    const t = document.createElement('span');
-    t.textContent = ' ' + text;
     div.appendChild(a);
-    div.appendChild(t);
+
+    // Detect if text is an image base64
+    if (typeof text === 'string' && text.startsWith('data:image/')) {
+      const img = document.createElement('img');
+      img.src = text;
+      img.style.cssText = 'max-width: 100%; border-radius: 6px; margin-top: 4px; display: block; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.3);';
+      div.appendChild(img);
+    } else {
+      const t = document.createElement('span');
+      t.textContent = ' ' + text;
+      div.appendChild(t);
+    }
   }
 
   box.appendChild(div);

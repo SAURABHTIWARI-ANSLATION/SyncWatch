@@ -142,6 +142,7 @@ html, body {
 #chat-msgs {
   flex: 1; overflow-y: auto; padding: 10px 14px;
   display: flex; flex-direction: column; gap: 6px;
+  scroll-behavior: smooth;
 }
 
 .msg { font-size: 13px; line-height: 1.4; word-break: break-word; color: var(--text); }
@@ -236,6 +237,9 @@ html, body {
 
   <div class="div"></div>
 
+  <!-- Voice/Mic toggle -->
+  <button class="btn btn-icon" id="btn-mic" title="Toggle Microphone" style="color:var(--muted); font-size:16px;">🎤</button>
+
   <!-- Screen share -->
   <button class="btn btn-share" id="btn-share" title="Share your screen">📡 Share Screen</button>
 
@@ -266,6 +270,8 @@ html, body {
     <div class="msg sys">You joined SyncWatch!</div>
   </div>
   <div class="chat-row">
+    <button id="btn-img" title="Send Image" style="background:rgba(255,255,255,0.06);border:none;border-radius:6px;padding:0 8px;cursor:pointer;font-size:14px;">📷</button>
+    <input type="file" id="file-img" accept="image/*" style="display:none">
     <input type="text" id="chat-input" placeholder="Type a message..." maxlength="300">
     <button id="chat-send">→</button>
   </div>

@@ -44,13 +44,15 @@ app.get('/', (req, res) => {
 // Create a new room
 app.post('/room/create', (req, res) => {
   const roomId = uuidv4().replace(/-/g, '').slice(0, 8).toUpperCase();
+  const hostSecret = uuidv4();
   rooms.set(roomId, {
+    hostSecret,
     clients: new Set(),
     createdAt: Date.now(),
     state: { time: 0, playing: false, updatedAt: Date.now() }
   });
   console.log(`[Room] Created: ${roomId}`);
-  res.json({ roomId });
+  res.json({ roomId, hostSecret });
 });
 
 // Check if room exists
@@ -92,7 +94,7 @@ function broadcast(roomId, msg, exclude = null) {
 
 wss.on('connection', (ws, req) => {
   let roomId = null;
-  const userId = uuidv4().slice(0, 6);
+  let userId = uuidv4().slice(0, 6); // changed to let so we can update it after join
   ws.wsUserId = userId;
 
   // FIX: Log connection origin for debugging cross-origin WebSocket issues
@@ -130,6 +132,16 @@ wss.on('connection', (ws, req) => {
 
         roomId = id;
         room.clients.add(ws);
+
+        // Assign Host identity if secret matches, else Guest
+        if (msg.hostSecret && msg.hostSecret === room.hostSecret) {
+          ws.wsUserId = 'Host';
+        } else {
+          ws.wsUserId = `Guest-${uuidv4().slice(0, 4)}`;
+        }
+        
+        // Ensure userId variable is updated to current ws state
+        userId = ws.wsUserId;
 
         // Calculate elapsed time for live sync
         const elapsed = room.state.playing

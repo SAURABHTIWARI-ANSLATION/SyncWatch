@@ -21,6 +21,7 @@ let knownPeers = new Set();
 // WebRTC state
 let rtcPeers = {};
 let localStream = null;
+let localMicStream = null;
 
 // FIX v1.3: Viewer video element (extension user receiving screen share)
 let viewerVideoEl = null;
@@ -195,6 +196,9 @@ function handleOverlayMessage(e) {
     case 'leave':
       chrome.runtime.sendMessage({ action: 'leaveRoom' });
       break;
+    case 'toggleMic':
+      handleToggleMic(msg.state);
+      break;
   }
 }
 
@@ -281,6 +285,14 @@ chrome.runtime.onMessage.addListener((msg) => {
     case 'error':
       postToOverlay({ type: 'error', msg: msg.msg || 'Connection lost' });
       break;
+
+    case 'screenShareGranted':
+      if (!msg.streamId) {
+        postToOverlay({ type: 'screenShareError', msg: 'Screen share cancelled.' });
+        return;
+      }
+      handleScreenShareGranted(msg.streamId);
+      break;
   }
 });
 
@@ -348,48 +360,83 @@ function removeViewerVideo() {
   viewerVideoEl = null;
 }
 
-// ── Screen Share — HOST ───────────────────────────────────────────
+// ── Mic (Voice Chat) ──────────────────────────────────────────────
 
-async function startScreenShare() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-    postToOverlay({ 
-      type: 'screenShareError', 
-      msg: 'Screen sharing is not supported on this device/browser.' 
+async function handleToggleMic(state) {
+  if (state) {
+    try {
+      localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      postToOverlay({ type: 'chat', userId: 'System', text: '🎤 Microphone enabled.' });
+      
+      // Patch the mic track into all existings peers & renegotiate
+      for (const [viewerId, pc] of Object.entries(rtcPeers)) {
+        if (pc && pc.signalingState !== 'closed') {
+          localMicStream.getTracks().forEach(t => pc.addTrack(t, localMicStream));
+          pc.createOffer().then(offer => pc.setLocalDescription(offer)).then(() => {
+            chrome.runtime.sendMessage({ action: 'signal', targetId: viewerId, signalData: { offer: pc.localDescription } });
+          }).catch(console.error);
+        }
+      }
+    } catch (e) {
+      console.error('[SW Content] Mic error:', e);
+      postToOverlay({ type: 'chat', userId: 'System', text: '⚠ Mic error: Could not access microphone.' });
+    }
+  } else {
+    if (localMicStream) {
+      localMicStream.getTracks().forEach(t => t.stop());
+      localMicStream = null;
+      postToOverlay({ type: 'chat', userId: 'System', text: '🎤 Microphone disabled.' });
+    }
+  }
+}
+
+// ── Screen Share — HOST (Native API) ─────────────────────────────
+
+function startScreenShare() {
+  chrome.runtime.sendMessage({ action: 'requestScreenShare' });
+}
+
+async function handleScreenShareGranted(streamId) {
+  try {
+    // Attempt to capture with audio First
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
+      },
+      video: {
+        mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
+      }
     });
-    return;
+  } catch (err) {
+    // Fallback if audio fails (e.g. sharing Window instead of Tab on Mac)
+    console.warn('[SW Content] Capture with audio failed, retrying video only...', err);
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId }
+        }
+      });
+      postToOverlay({ type: 'chat', userId: 'System', text: '⚠ Notice: No audio captured! To share audio, you MUST select "Share Tab" instead of Window/Screen.' });
+    } catch (fallbackErr) {
+      console.error('[SW Content] Fallback screen share error:', fallbackErr);
+      postToOverlay({ type: 'screenShareError', msg: 'Capture permission denied or failed.' });
+      return;
+    }
   }
 
-  try {
-    localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false }
-    });
+  localStream.getTracks().forEach(track => {
+    track.onended = () => stopScreenShare();
+  });
 
-    localStream.getTracks().forEach(track => {
-      track.onended = () => stopScreenShare();
-    });
+  postToOverlay({ type: 'screenShareStarted' });
 
-    // Notify about missing audio
-    if (localStream.getAudioTracks().length === 0) {
-      postToOverlay({ type: 'chat', userId: 'System', text: '⚠ Notice: No audio captured! To share audio, you MUST select "Share Tab" instead of Window/Screen.' });
-    }
-
-    postToOverlay({ type: 'screenShareStarted' });
-
-    const viewers = [...knownPeers].filter(id => id !== userId);
-    if (viewers.length === 0) {
-      postToOverlay({ type: 'chat', userId: 'System', text: 'Screen share started — viewers will see it when they join.' });
-    }
-    for (const viewerId of viewers) {
-      await createPeerForViewer(viewerId);
-    }
-  } catch (e) {
-    console.error('[SW Content] Screen share error:', e);
-    localStream = null;
-    postToOverlay({
-      type: 'screenShareError',
-      msg: e.name === 'NotAllowedError' ? 'Permission denied. Allow screen access and try again.' : e.message
-    });
+  const viewers = [...knownPeers].filter(id => id !== userId);
+  if (viewers.length === 0) {
+    postToOverlay({ type: 'chat', userId: 'System', text: 'Screen share started — viewers will see it when they join.' });
+  }
+  for (const viewerId of viewers) {
+    await createPeerForViewer(viewerId);
   }
 }
 
@@ -423,7 +470,21 @@ async function createPeerForViewer(viewerId) {
   rtcPeers[viewerId] = pc;
   pc._iceQueue = [];
 
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  if (localMicStream) localMicStream.getTracks().forEach(track => pc.addTrack(track, localMicStream));
+
+  pc.ontrack = e => {
+    // HOST receiving audio (or other tracks) from a viewer
+    if (!e.streams?.[0]) return;
+    let aEl = document.getElementById(`sw-audio-${viewerId}`);
+    if (!aEl) {
+      aEl = document.createElement('audio');
+      aEl.id = `sw-audio-${viewerId}`;
+      aEl.autoplay = true;
+      document.body.appendChild(aEl);
+    }
+    aEl.srcObject = e.streams[0];
+  };
 
   pc.onicecandidate = e => {
     if (e.candidate) {
@@ -468,7 +529,15 @@ async function handleWebRTCSignal(senderId, signal) {
     if (!pc) pc = await createPeerForViewer(senderId);
     if (!pc) return;
 
-    if (signal.answer) {
+    if (signal.offer) {
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        chrome.runtime.sendMessage({ action: 'signal', targetId: senderId, signalData: { answer: pc.localDescription } });
+        drainIceQueue(pc);
+      } catch (e) { console.error('[SW] HOST offer setRemoteDesc error:', e); }
+    } else if (signal.answer) {
       try {
         if (pc.signalingState === 'have-local-offer') {
           await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
@@ -514,6 +583,11 @@ async function handleWebRTCSignal(senderId, signal) {
           setTimeout(() => { if (rtcPeers[senderId] === pc) delete rtcPeers[senderId]; }, 2000);
         }
       };
+    }
+
+    if (localMicStream && !pc.localTracksAddedForViewer) {
+       localMicStream.getTracks().forEach(track => pc.addTrack(track, localMicStream));
+       pc.localTracksAddedForViewer = true;
     }
 
     if (signal.offer) {

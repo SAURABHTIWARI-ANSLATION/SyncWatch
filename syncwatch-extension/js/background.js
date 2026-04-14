@@ -34,7 +34,8 @@ function connectWS(tabId, roomId, isHost) {
 
   ws.onopen = () => {
     console.log(`[SW] WS open tab=${tabId} room=${roomId}`);
-    ws.send(JSON.stringify({ type: 'join', roomId }));
+    const hostSecret = db[tabId] ? db[tabId].hostSecret : null;
+    ws.send(JSON.stringify({ type: 'join', roomId, hostSecret }));
   };
 
   ws.onmessage = e => {
@@ -163,8 +164,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(r => r.json())
       .then(data => {
         const roomId = data.roomId;
+        const hostSecret = data.hostSecret;
         const tabId = msg.tabId;
-        db[tabId] = { roomId, isHost: true, userId: null, memberCount: 1, otherUsers: [] };
+        db[tabId] = { roomId, hostSecret, isHost: true, userId: null, memberCount: 1, otherUsers: [] };
         saveDb();
         connectWS(tabId, roomId, true);
         sendResponse({ ok: true, roomId });
@@ -256,6 +258,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'syncRequest' && senderTabId) {
     wsSend(senderTabId, { type: 'sync_request' });
     return;
+  }
+
+  // ── Content: Screen Share Request (Native Desktop Capture) ──
+  if (msg.action === 'requestScreenShare' && senderTabId) {
+    chrome.desktopCapture.chooseDesktopMedia(['screen', 'window', 'tab', 'audio'], sender.tab, (streamId) => {
+      sendToTab(senderTabId, { sw: 'screenShareGranted', streamId });
+    });
+    return true;
   }
 });
 

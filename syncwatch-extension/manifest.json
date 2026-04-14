@@ -33,6 +33,7 @@
     "storage",
     "scripting",
     "tabs",
+    "desktopCapture",
     "webNavigation"
   ],
   "host_permissions": ["<all_urls>"],
