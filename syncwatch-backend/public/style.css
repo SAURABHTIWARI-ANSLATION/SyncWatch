@@ -240,3 +240,34 @@ body {
   padding-top: 10px;
   opacity: 0.5;
 }
+
+/* ── Responsive Design for Mobile Devices ── */
+@media screen and (max-width: 850px) {
+  .header { padding: 0 12px; gap: 8px; }
+  .brand span { display: none; }
+  .btn-share { padding: 6px 8px !important; font-size: 12px !important; }
+
+  .container { padding: 12px; align-items: stretch; display: block; overflow-y: auto; }
+  
+  #view-player {
+    flex-direction: column;
+    gap: 16px;
+    height: auto;
+  }
+
+  .player-wrapper {
+    flex: none;
+    width: 100%;
+    height: auto;
+    max-height: 40vh; /* Don't take up the whole screen on very narrow phones */
+  }
+
+  .sidebar {
+    width: 100%;
+    flex: 1;
+    min-height: 40vh;
+  }
+
+  .hero h1 { font-size: 32px; }
+  .join-card { padding: 20px; }
+}

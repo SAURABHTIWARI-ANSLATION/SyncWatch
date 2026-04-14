@@ -281,9 +281,15 @@ async function startLocalScreenShare() {
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: true
+      audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false }
     });
     localStream.getTracks().forEach(track => { track.onended = () => stopLocalScreenShare(); });
+    
+    // Check if audio track is missing
+    const hasAudio = localStream.getAudioTracks().length > 0;
+    if (!hasAudio) {
+      addChatMessage('System', '⚠ Notice: No audio captured! To share audio (e.g. video sound), you MUST select "Share Tab" instead of Window/Entire Screen on Mac/PC.');
+    }
 
     isWebClientSharing = true;
     const btn = document.getElementById('btn-web-share');

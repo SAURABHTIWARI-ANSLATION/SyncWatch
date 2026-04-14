@@ -354,12 +354,17 @@ async function startScreenShare() {
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: true
+      audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false }
     });
 
     localStream.getTracks().forEach(track => {
       track.onended = () => stopScreenShare();
     });
+
+    // Notify about missing audio
+    if (localStream.getAudioTracks().length === 0) {
+      postToOverlay({ type: 'chat', userId: 'System', text: '⚠ Notice: No audio captured! To share audio, you MUST select "Share Tab" instead of Window/Screen.' });
+    }
 
     postToOverlay({ type: 'screenShareStarted' });
 
