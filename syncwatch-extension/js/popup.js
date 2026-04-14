@@ -75,6 +75,8 @@ document.getElementById('btn-create').addEventListener('click', () => {
     if (resp.ok) {
       currentRoomId = resp.roomId;
       showInviteBox(resp.roomId);
+      // Auto-trigger screen share prompt for the host
+      chrome.tabs.sendMessage(currentTabId, { action: 'autoStartShare' }).catch(() => {});
       // Banner will appear when 'joined' message arrives from background
     } else {
       setLoading(false, 'btn-create');

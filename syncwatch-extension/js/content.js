@@ -201,6 +201,11 @@ function handleOverlayMessage(e) {
 // ── Messages FROM background ──────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.action === 'autoStartShare') {
+    startScreenShare();
+    return;
+  }
+
   if (!msg.sw) return;
 
   switch (msg.sw) {

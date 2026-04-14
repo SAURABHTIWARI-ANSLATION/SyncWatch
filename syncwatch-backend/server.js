@@ -56,6 +56,15 @@ app.post('/room/create', (req, res) => {
 // Check if room exists
 app.get('/room/:id', (req, res) => {
   const id = req.params.id.toUpperCase();
+  // Auto-create room if it looks valid to handle sleep restarts
+  if (!rooms.has(id) && id.length === 8) {
+    rooms.set(id, {
+      clients: new Set(),
+      createdAt: Date.now(),
+      state: { time: 0, playing: false, updatedAt: Date.now() }
+    });
+    console.log(`[Room] Auto-created via HTTP check: ${id}`);
+  }
   res.json({ exists: rooms.has(id) });
 });
 
@@ -98,7 +107,7 @@ wss.on('connection', (ws, req) => {
 
       case 'join': {
         const id = (msg.roomId || '').toUpperCase();
-        const room = rooms.get(id);
+        let room = rooms.get(id);
 
         // FIX: If the room doesn't exist, auto-create it for web clients
         // This handles the race condition where a room gets deleted between
@@ -106,12 +115,17 @@ wss.on('connection', (ws, req) => {
         if (!room) {
           // Check if this looks like a valid room ID attempt (8 chars)
           if (id.length === 8) {
-            // Room was deleted or expired — inform the client clearly
-            send(ws, { type: 'error', msg: `Room "${id}" not found or has expired. Ask the host to create a new room.` });
+            rooms.set(id, {
+              clients: new Set(),
+              createdAt: Date.now(),
+              state: { time: 0, playing: false, updatedAt: Date.now() }
+            });
+            room = rooms.get(id);
+            console.log(`[Room] Auto-created on join attempt: ${id}`);
           } else {
             send(ws, { type: 'error', msg: 'Invalid Room ID format.' });
+            return;
           }
-          return;
         }
 
         roomId = id;
