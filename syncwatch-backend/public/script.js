@@ -2,11 +2,8 @@
 'use strict';
 
 let socket = null;
-let player = null;
 let roomId = null;
 let userId = null;
-let isSyncing = false;
-let playerReady = false;
 let streamConnected = false;
 
 // Retry state for Render.com cold-start
@@ -34,25 +31,7 @@ const cleanPath = window.location.pathname.replace(/\/$/, '');
 roomId = cleanPath.split('/').pop().toUpperCase().replace(/[^A-Z0-9]/g, '');
 if (roomId) document.getElementById('inp-room-id').value = roomId;
 
-// ── 2. YouTube API ────────────────────────────────────────
-function onYouTubeIframeAPIReady() {
-  player = new YT.Player('yt-player', {
-    height: '100%', width: '100%', videoId: '',
-    playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1, origin: window.location.origin },
-    events: {
-      onReady: () => { playerReady = true; },
-      onStateChange: onPlayerStateChange
-    }
-  });
-}
-
-function onPlayerStateChange(event) {
-  if (isSyncing || !playerReady) return;
-  if (event.data === YT.PlayerState.PLAYING) send({ type: 'play', time: player.getCurrentTime() });
-  else if (event.data === YT.PlayerState.PAUSED) send({ type: 'pause', time: player.getCurrentTime() });
-}
-
-// ── 3. Connection with retry ──────────────────────────────
+// ── 2. Connection with retry ──────────────────────────────
 document.getElementById('btn-join').addEventListener('click', () => { retryCount = 0; startSync(); });
 
 function startSync() {
@@ -157,27 +136,13 @@ function handleMessage(msg) {
       knownPeers.clear();
       (msg.otherUsers || []).forEach(id => knownPeers.add(id));
       showWaitingSplash();
-      if (msg.state && (msg.state.playing || msg.state.time > 2)) waitForPlayerThenSync(msg.state);
       break;
 
+    // Web client only uses screen sharing, so ignore play/pause/seek/sync messages
     case 'play':
-      if (msg.userId !== userId && !streamConnected) applySync({ time: msg.time, playing: true });
-      break;
-
     case 'pause':
-      if (msg.userId !== userId && !streamConnected) applySync({ time: msg.time, playing: false });
-      break;
-
     case 'seek':
-      if (msg.userId !== userId && !streamConnected) {
-        isSyncing = true;
-        if (player && playerReady) { try { player.seekTo(msg.time, true); } catch (_) { } }
-        setTimeout(() => { isSyncing = false; }, 500);
-      }
-      break;
-
     case 'sync':
-      if (!streamConnected) applySync(msg.state);
       break;
 
     case 'chat':
@@ -208,30 +173,6 @@ function handleMessage(msg) {
       addChatMessage('System', 'Error: ' + msg.msg);
       break;
   }
-}
-
-// ── 5. Sync apply ─────────────────────────────────────────
-
-function waitForPlayerThenSync(state) {
-  if (playerReady) { applySync(state); return; }
-  let attempts = 0;
-  const check = setInterval(() => {
-    attempts++;
-    if (playerReady) { clearInterval(check); applySync(state); }
-    if (attempts > 20) clearInterval(check);
-  }, 500);
-}
-
-function applySync(state) {
-  if (!player || !playerReady) return;
-  isSyncing = true;
-  try {
-    const cur = player.getCurrentTime() || 0;
-    if (typeof state.time === 'number' && Math.abs(cur - state.time) > 1.5) player.seekTo(state.time, true);
-    if (state.playing) player.playVideo();
-    else player.pauseVideo();
-  } catch (_) { }
-  setTimeout(() => { isSyncing = false; }, 800);
 }
 
 // ── 6. Waiting splash ─────────────────────────────────────
@@ -304,14 +245,12 @@ async function startLocalScreenShare() {
 
     // Show our own stream locally
     const remoteVid = document.getElementById('remote-stream');
-    const ytPlayer = document.getElementById('yt-player');
     if (remoteVid) {
       remoteVid.srcObject = localStream;
       remoteVid.style.display = 'block';
       remoteVid.muted = true;
       remoteVid.play().catch(() => { });
     }
-    if (ytPlayer) ytPlayer.style.display = 'none';
     hideWaitingSplash();
     streamConnected = true;
 
@@ -342,9 +281,7 @@ function stopLocalScreenShare() {
   btn.style.borderColor = 'rgba(74,222,128,0.3)';
 
   const remoteVid = document.getElementById('remote-stream');
-  const ytPlayer = document.getElementById('yt-player');
   if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; remoteVid.muted = false; }
-  if (ytPlayer) ytPlayer.style.display = 'block';
   streamConnected = false;
   showWaitingSplash();
 
@@ -430,7 +367,6 @@ async function handleSignal(senderId, signal) {
       pc.ontrack = e => {
         if (!e.streams?.[0]) return;
         const remoteVid = document.getElementById('remote-stream');
-        const ytPlayer = document.getElementById('yt-player');
         if (remoteVid) {
           remoteVid.srcObject = e.streams[0];
           remoteVid.style.display = 'block';
@@ -444,7 +380,6 @@ async function handleSignal(senderId, signal) {
             }).catch(() => { });
           });
         }
-        if (ytPlayer) ytPlayer.style.display = 'none';
         streamConnected = true;
         hideWaitingSplash();
         addChatMessage('System', '🎥 Screen share connected!');
@@ -456,9 +391,7 @@ async function handleSignal(senderId, signal) {
         }
         if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
           const remoteVid = document.getElementById('remote-stream');
-          const ytPlayer = document.getElementById('yt-player');
           if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; }
-          if (ytPlayer) ytPlayer.style.display = 'block';
           streamConnected = false;
           showWaitingSplash();
           addChatMessage('System', 'Screen share ended.');

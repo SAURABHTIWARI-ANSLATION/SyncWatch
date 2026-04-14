@@ -78,8 +78,6 @@ document.getElementById('btn-create').addEventListener('click', () => {
       // Auto-trigger screen share prompt for the host if they stay in extension
       chrome.tabs.sendMessage(currentTabId, { action: 'autoStartShare' }).catch(() => {});
       
-      // Auto-open Web Client directly so the host can control it from there too
-      chrome.tabs.create({ url: `${BACKEND}/join/${resp.roomId}` });
       // Banner will appear when 'joined' message arrives from background
     } else {
       setLoading(false, 'btn-create');
