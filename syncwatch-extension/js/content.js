@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────
-// SyncWatch — Content Script  (FIXED v1.2)
+// SyncWatch — Content Script  (FIXED v1.3)
 // ─────────────────────────────────────────────────────────────────
 'use strict';
 
@@ -16,12 +16,14 @@ let overlayFrame = null;
 let scanInterval = null;
 let heartbeatInterval = null;
 
-// FIX: Track all known peer userIds for screen share
 let knownPeers = new Set();
 
-// WebRTC state (host only — screen share)
+// WebRTC state
 let rtcPeers = {};
 let localStream = null;
+
+// FIX v1.3: Viewer video element (extension user receiving screen share)
+let viewerVideoEl = null;
 
 const ICE_SERVERS = {
   iceServers: [
@@ -75,7 +77,6 @@ function attachToVideo(v, score) {
   video.addEventListener('pause', handlePause);
   video.addEventListener('seeked', handleSeeked);
   video.addEventListener('durationchange', handleDuration);
-  // Overlay inject karo agar abhi tak nahi hui
   injectOverlay();
 }
 
@@ -132,7 +133,7 @@ function applySeek(time) {
 // ── Controls overlay (iframe) ─────────────────────────────────────
 
 function injectOverlay() {
-  if (overlayFrame) return; // Already injected — skip
+  if (overlayFrame) return;
 
   const host = document.createElement('div');
   host.id = 'sw-overlay-host';
@@ -192,7 +193,6 @@ function handleOverlayMessage(e) {
       chrome.runtime.sendMessage({ action: 'syncRequest' });
       break;
     case 'leave':
-      // FIX: was using chrome.runtime.id (extension ID) — background uses sender.tab.id now
       chrome.runtime.sendMessage({ action: 'leaveRoom' });
       break;
   }
@@ -211,15 +211,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       knownPeers.clear();
       (msg.otherUsers || []).forEach(id => knownPeers.add(id));
 
-      // ─────────────────────────────────────────────────────────────
-      // MAIN FIX: Overlay TURANT inject karo room join hote hi.
-      // Pehle sirf video detect hone par inject hoti thi — isliye
-      // agar page pe video nahi play ho rahi toh Share Screen button
-      // kabhi nahi dikhta tha.
-      // ─────────────────────────────────────────────────────────────
       injectOverlay();
-
-      // Iframe load hone ka thoda wait karo, phir joined state bhejo
       setTimeout(() => {
         postToOverlay({ type: 'joined', roomId: msg.roomId, userId: msg.userId, memberCount: msg.memberCount });
       }, 800);
@@ -253,7 +245,6 @@ chrome.runtime.onMessage.addListener((msg) => {
     case 'user_joined':
       knownPeers.add(msg.userId);
       postToOverlay({ type: 'user_joined', userId: msg.userId, memberCount: msg.memberCount });
-      // Agar screen share chal raha hai toh naye viewer ko offer bhejo
       if (localStream) {
         console.log('[SW Content] New viewer during share, offering:', msg.userId);
         createPeerForViewer(msg.userId);
@@ -263,7 +254,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     case 'user_left':
       knownPeers.delete(msg.userId);
       postToOverlay({ type: 'user_left', userId: msg.userId, memberCount: msg.memberCount });
-      if (rtcPeers[msg.userId]) { rtcPeers[msg.userId].close(); delete rtcPeers[msg.userId]; }
+      closePeer(msg.userId);
       break;
 
     case 'signal':
@@ -277,6 +268,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       knownPeers.clear();
       removeOverlay();
       stopScreenShare();
+      removeViewerVideo();
       stopHeartbeat();
       break;
 
@@ -301,42 +293,112 @@ function stopHeartbeat() {
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
 }
 
-// ── WebRTC Screen Share ───────────────────────────────────────────
+// ── WebRTC helpers ────────────────────────────────────────────────
+
+function closePeer(peerId) {
+  if (!rtcPeers[peerId]) return;
+  try { rtcPeers[peerId].close(); } catch (_) { }
+  delete rtcPeers[peerId];
+}
+
+function drainIceQueue(pc) {
+  if (!pc._iceQueue?.length) return;
+  pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => { }));
+  pc._iceQueue = [];
+}
+
+// ── Viewer video (extension user receiving a screen share) ────────
+
+function injectViewerVideo(stream) {
+  removeViewerVideo();
+
+  viewerVideoEl = document.createElement('video');
+  viewerVideoEl.id = 'sw-viewer-video';
+  viewerVideoEl.autoplay = true;
+  viewerVideoEl.playsInline = true;
+  viewerVideoEl.muted = false;
+  viewerVideoEl.style.cssText = [
+    'position:fixed', 'top:0', 'left:0',
+    'width:100%', 'height:calc(100% - 56px)',
+    'z-index:2147483640', 'background:#000',
+    'object-fit:contain', 'pointer-events:none'
+  ].join(';');
+
+  viewerVideoEl.srcObject = stream;
+  document.body.appendChild(viewerVideoEl);
+
+  viewerVideoEl.play().catch(() => {
+    viewerVideoEl.muted = true;
+    viewerVideoEl.play().catch(console.warn);
+  });
+
+  postToOverlay({ type: 'screenShareStarted' });
+  console.log('[SW Content] Viewer video injected');
+}
+
+function removeViewerVideo() {
+  if (!viewerVideoEl) return;
+  try { viewerVideoEl.srcObject = null; } catch (_) { }
+  viewerVideoEl.remove();
+  viewerVideoEl = null;
+}
+
+// ── Screen Share — HOST ───────────────────────────────────────────
 
 async function startScreenShare() {
   try {
-    localStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
-    localStream.getTracks().forEach(track => { track.onended = () => stopScreenShare(); });
+    localStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: true
+    });
+
+    localStream.getTracks().forEach(track => {
+      track.onended = () => stopScreenShare();
+    });
+
     postToOverlay({ type: 'screenShareStarted' });
-    // Sabhi known viewers ko offer bhejo
-    await createOfferToAllPeers();
+
+    const viewers = [...knownPeers].filter(id => id !== userId);
+    if (viewers.length === 0) {
+      postToOverlay({ type: 'chat', userId: 'System', text: 'Screen share started — viewers will see it when they join.' });
+    }
+    for (const viewerId of viewers) {
+      await createPeerForViewer(viewerId);
+    }
   } catch (e) {
     console.error('[SW Content] Screen share error:', e);
-    postToOverlay({ type: 'screenShareError', msg: e.message });
+    localStream = null;
+    postToOverlay({
+      type: 'screenShareError',
+      msg: e.name === 'NotAllowedError' ? 'Permission denied. Allow screen access and try again.' : e.message
+    });
   }
 }
 
 function stopScreenShare() {
-  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-  Object.values(rtcPeers).forEach(pc => { try { pc.close(); } catch (_) { } });
-  rtcPeers = {};
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  Object.keys(rtcPeers).forEach(id => closePeer(id));
   postToOverlay({ type: 'screenShareStopped' });
 }
 
-async function createOfferToAllPeers() {
-  const viewers = [...knownPeers].filter(id => id !== userId);
-  if (viewers.length === 0) {
-    console.log('[SW Content] No viewers yet to send screen share to.');
-    return;
-  }
-  for (const viewerId of viewers) {
-    console.log('[SW Content] Sending WebRTC offer to:', viewerId);
-    await createPeerForViewer(viewerId);
-  }
-}
+// ── createPeerForViewer (HOST) ─────────────────────────────────────
+// FIX v1.3: check peer health instead of blindly returning stale peer
 
 async function createPeerForViewer(viewerId) {
-  if (rtcPeers[viewerId]) return rtcPeers[viewerId];
+  // If peer exists and is healthy, skip
+  if (rtcPeers[viewerId]) {
+    const state = rtcPeers[viewerId].connectionState;
+    if (state === 'connected' || state === 'connecting') {
+      console.log(`[SW Content] Peer ${viewerId} already ${state}`);
+      return rtcPeers[viewerId];
+    }
+    console.log(`[SW Content] Replacing stale peer for ${viewerId} (was: ${state})`);
+    closePeer(viewerId);
+  }
+
   if (!localStream) return null;
 
   const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -346,55 +408,92 @@ async function createPeerForViewer(viewerId) {
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
   pc.onicecandidate = e => {
-    if (e.candidate) chrome.runtime.sendMessage({ action: 'signal', targetId: viewerId, signalData: { candidate: e.candidate } });
+    if (e.candidate) {
+      chrome.runtime.sendMessage({ action: 'signal', targetId: viewerId, signalData: { candidate: e.candidate } });
+    }
   };
 
   pc.onconnectionstatechange = () => {
-    console.log(`[SW Content] Peer ${viewerId}: ${pc.connectionState}`);
-    if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) delete rtcPeers[viewerId];
+    console.log(`[SW Content] Peer ${viewerId} → ${pc.connectionState}`);
+    if (pc.connectionState === 'failed') {
+      // Attempt ICE restart
+      try { pc.restartIce(); } catch (_) { }
+    }
+    if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      setTimeout(() => { if (rtcPeers[viewerId] === pc) delete rtcPeers[viewerId]; }, 3000);
+    }
   };
 
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    chrome.runtime.sendMessage({ action: 'signal', targetId: viewerId, signalData: { offer } });
+    chrome.runtime.sendMessage({
+      action: 'signal',
+      targetId: viewerId,
+      signalData: { offer: pc.localDescription }
+    });
   } catch (e) {
     console.error('[SW Content] createOffer error for', viewerId, ':', e);
+    closePeer(viewerId);
+    return null;
   }
 
   return pc;
 }
 
+// ── handleWebRTCSignal ─────────────────────────────────────────────
+
 async function handleWebRTCSignal(senderId, signal) {
   if (localStream) {
-    // HOST — viewers ke answers/candidates handle karo
+    // ── HOST: answers/candidates from viewers ──
     let pc = rtcPeers[senderId];
     if (!pc) pc = await createPeerForViewer(senderId);
     if (!pc) return;
 
     if (signal.answer) {
-      try { await pc.setRemoteDescription(new RTCSessionDescription(signal.answer)); drainIceQueue(pc); }
-      catch (e) { console.error('[SW] setRemoteDesc answer error:', e); }
+      try {
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
+          drainIceQueue(pc);
+        }
+      } catch (e) { console.error('[SW] answer setRemoteDesc error:', e); }
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
       if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
       else pc._iceQueue.push(ice);
     }
+
   } else {
-    // VIEWER — host ke offer/candidates handle karo
+    // ── VIEWER: offers/candidates from host ──
     let pc = rtcPeers[senderId];
+
     if (!pc) {
       pc = new RTCPeerConnection(ICE_SERVERS);
       pc._iceQueue = [];
       rtcPeers[senderId] = pc;
 
       pc.onicecandidate = e => {
-        if (e.candidate) chrome.runtime.sendMessage({ action: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
+        if (e.candidate) {
+          chrome.runtime.sendMessage({ action: 'signal', targetId: senderId, signalData: { candidate: e.candidate } });
+        }
       };
+
+      // FIX v1.3: ontrack was COMPLETELY MISSING — viewer never received the stream!
+      pc.ontrack = e => {
+        if (!e.streams?.[0]) return;
+        console.log('[SW Content] ✅ Received screen share stream');
+        injectViewerVideo(e.streams[0]);
+      };
+
       pc.onconnectionstatechange = () => {
+        console.log(`[SW Content] Viewer peer ${senderId}: ${pc.connectionState}`);
+        if (pc.connectionState === 'failed') {
+          try { pc.restartIce(); } catch (_) { }
+        }
         if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-          delete rtcPeers[senderId];
+          removeViewerVideo();
           postToOverlay({ type: 'streamEnded' });
+          setTimeout(() => { if (rtcPeers[senderId] === pc) delete rtcPeers[senderId]; }, 2000);
         }
       };
     }
@@ -404,9 +503,16 @@ async function handleWebRTCSignal(senderId, signal) {
         await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        chrome.runtime.sendMessage({ action: 'signal', targetId: senderId, signalData: { answer } });
+        chrome.runtime.sendMessage({
+          action: 'signal',
+          targetId: senderId,
+          signalData: { answer: pc.localDescription }
+        });
         drainIceQueue(pc);
-      } catch (e) { console.error('[SW] setRemoteDesc offer error:', e); }
+      } catch (e) {
+        console.error('[SW] offer setRemoteDesc error:', e);
+        closePeer(senderId);
+      }
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
       if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
@@ -415,15 +521,8 @@ async function handleWebRTCSignal(senderId, signal) {
   }
 }
 
-function drainIceQueue(pc) {
-  if (!pc._iceQueue?.length) return;
-  pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => { }));
-  pc._iceQueue = [];
-}
-
 // ── Init ──────────────────────────────────────────────────────────
 
-// Page refresh ke baad state restore karo
 chrome.runtime.sendMessage({ action: 'getStatus' }, resp => {
   if (resp && resp.room && resp.connected) {
     inRoom = true;

@@ -1,4 +1,4 @@
-// SyncWatch Web Client  (FIXED v1.1)
+// SyncWatch Web Client  (FIXED v1.2)
 'use strict';
 
 let socket = null;
@@ -9,7 +9,7 @@ let isSyncing = false;
 let playerReady = false;
 let streamConnected = false;
 
-// FIX: retry state for Render.com cold-start reconnection
+// Retry state for Render.com cold-start
 let retryCount = 0;
 const MAX_RETRY = 8;
 const RETRY_DELAYS = [2000, 3000, 5000, 8000, 10000, 15000, 20000, 30000];
@@ -62,7 +62,6 @@ function startSync() {
   document.getElementById('loading-screen').classList.remove('hidden');
   document.getElementById('btn-join').disabled = true;
 
-  // FIX: Show friendly message while Render wakes up
   if (retryCount > 0) {
     document.querySelector('#loading-screen p').textContent =
       `Server is waking up… (attempt ${retryCount + 1}/${MAX_RETRY})`;
@@ -73,7 +72,6 @@ function startSync() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   socket = new WebSocket(`${protocol}//${window.location.host}`);
 
-  // FIX: 15-second connection timeout — Render free tier can be slow
   const connectTimeout = setTimeout(() => {
     if (socket.readyState !== WebSocket.OPEN) {
       socket.close();
@@ -96,7 +94,6 @@ function startSync() {
     clearTimeout(connectTimeout);
     setStatus('offline');
     if (e.code !== 1000 && e.code !== 1001) {
-      // Abnormal close — try to reconnect
       handleRetry('Connection lost. Reconnecting...');
     } else {
       addChatMessage('System', 'Disconnected. Refresh to reconnect.');
@@ -110,7 +107,6 @@ function startSync() {
   };
 }
 
-// FIX: Auto-retry with exponential backoff for Render.com cold start
 function handleRetry(reason) {
   if (retryCount >= MAX_RETRY) {
     document.getElementById('loading-screen').classList.add('hidden');
@@ -122,7 +118,6 @@ function handleRetry(reason) {
   const delay = RETRY_DELAYS[retryCount] || 30000;
   addChatMessage('System', `${reason} Retrying in ${Math.round(delay / 1000)}s...`);
 
-  // Show retry countdown in loading screen
   let remaining = Math.round(delay / 1000);
   const countdownEl = document.querySelector('#loading-screen p');
   const interval = setInterval(() => {
@@ -193,14 +188,12 @@ function handleMessage(msg) {
       knownPeers.add(msg.userId);
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       addChatMessage('System', `${msg.userId} joined`);
-      if (localStream) {
-        createPeerForViewer(msg.userId);
-      }
+      if (localStream) createPeerForViewer(msg.userId);
       break;
 
     case 'user_left':
       knownPeers.delete(msg.userId);
-      if (rtcPeers[msg.userId]) { rtcPeers[msg.userId].close(); delete rtcPeers[msg.userId]; }
+      closePeer(msg.userId);
       document.getElementById('member-count').textContent = `${msg.memberCount} watching`;
       addChatMessage('System', `${msg.userId} left`);
       break;
@@ -225,44 +218,35 @@ function waitForPlayerThenSync(state) {
   const check = setInterval(() => {
     attempts++;
     if (playerReady) { clearInterval(check); applySync(state); }
-    else if (attempts > 20) { clearInterval(check); }
+    if (attempts > 20) clearInterval(check);
   }, 500);
 }
 
 function applySync(state) {
-  if (!player || !state || streamConnected || !playerReady) return;
+  if (!player || !playerReady) return;
   isSyncing = true;
   try {
-    if (Math.abs(player.getCurrentTime() - state.time) > 1.5) player.seekTo(state.time, true);
+    const cur = player.getCurrentTime() || 0;
+    if (typeof state.time === 'number' && Math.abs(cur - state.time) > 1.5) player.seekTo(state.time, true);
     if (state.playing) player.playVideo();
     else player.pauseVideo();
-  } catch (e) { console.warn('[SW] applySync error:', e); }
+  } catch (_) { }
   setTimeout(() => { isSyncing = false; }, 800);
 }
 
 // ── 6. Waiting splash ─────────────────────────────────────
+
 function showWaitingSplash() {
-  if (streamConnected) return;
-  hideWaitingSplash();
+  if (document.getElementById('sw-waiting')) return;
   const wrapper = document.querySelector('.player-wrapper');
   if (!wrapper) return;
   const splash = document.createElement('div');
   splash.id = 'sw-waiting';
+  splash.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(5,8,15,0.85);gap:16px;color:#f8fafc;';
   splash.innerHTML = `
-    <div style="position:absolute;inset:0;display:flex;flex-direction:column;
-      align-items:center;justify-content:center;gap:16px;
-      background:rgba(5,8,15,0.95);z-index:20;
-      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-      color:#f8fafc;text-align:center;padding:32px;">
-      <div style="width:48px;height:48px;border:4px solid #1e293b;border-top-color:#7c9fff;
-        border-radius:50%;animation:swspin 1s linear infinite;"></div>
-      <div style="font-size:20px;font-weight:700;">Waiting for host to share screen</div>
-      <div style="font-size:14px;color:#64748b;max-width:280px;line-height:1.6;">
-        The host needs to click <strong style="color:#7c9fff">Share Screen</strong> in their
-        SyncWatch extension overlay to start sharing.<br><br>
-        Video sync is still active while you wait.
-      </div>
-    </div>
+    <div style="width:48px;height:48px;border:4px solid rgba(124,159,255,0.3);border-top-color:#7c9fff;border-radius:50%;animation:swspin 1s linear infinite;"></div>
+    <div style="font-size:16px;font-weight:600;">Waiting for host to share screen...</div>
+    <div style="font-size:12px;color:#94a3b8;">Or the host can use the extension to sync a video</div>
     <style>@keyframes swspin{to{transform:rotate(360deg)}}</style>
   `;
   wrapper.appendChild(splash);
@@ -273,8 +257,21 @@ function hideWaitingSplash() {
   if (el) el.remove();
 }
 
-// ── 7. WebRTC ─────────────────────────────────────────────
+// ── 7. WebRTC helpers ─────────────────────────────────────
 
+function closePeer(peerId) {
+  if (!rtcPeers[peerId]) return;
+  try { rtcPeers[peerId].close(); } catch (_) { }
+  delete rtcPeers[peerId];
+}
+
+function drainIceQueue(pc) {
+  if (!pc._iceQueue?.length) return;
+  pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => { }));
+  pc._iceQueue = [];
+}
+
+// Screen share buttons
 document.getElementById('btn-web-share').addEventListener('click', () => {
   if (isWebClientSharing) stopLocalScreenShare();
   else startLocalScreenShare();
@@ -282,62 +279,78 @@ document.getElementById('btn-web-share').addEventListener('click', () => {
 
 async function startLocalScreenShare() {
   try {
-    localStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
+    localStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: true
+    });
     localStream.getTracks().forEach(track => { track.onended = () => stopLocalScreenShare(); });
-    
-    isWebClientSharing = true;
-    document.getElementById('btn-web-share').innerHTML = '🔴 Stop Share';
-    document.getElementById('btn-web-share').style.background = 'rgba(244,63,94,0.15)';
-    document.getElementById('btn-web-share').style.color = '#f43f5e';
-    document.getElementById('btn-web-share').style.borderColor = 'rgba(244,63,94,0.3)';
 
-    // Play our own stream locally
+    isWebClientSharing = true;
+    const btn = document.getElementById('btn-web-share');
+    btn.innerHTML = '🔴 Stop Share';
+    btn.style.background = 'rgba(244,63,94,0.15)';
+    btn.style.color = '#f43f5e';
+    btn.style.borderColor = 'rgba(244,63,94,0.3)';
+
+    // Show our own stream locally
     const remoteVid = document.getElementById('remote-stream');
     const ytPlayer = document.getElementById('yt-player');
     if (remoteVid) {
       remoteVid.srcObject = localStream;
       remoteVid.style.display = 'block';
-      remoteVid.muted = true; // Mute ourselves so we don't hear our own audio
-      remoteVid.play().catch(() => {});
+      remoteVid.muted = true;
+      remoteVid.play().catch(() => { });
     }
     if (ytPlayer) ytPlayer.style.display = 'none';
     hideWaitingSplash();
     streamConnected = true;
 
-    // Send offer to all peers
-    const viewers = [...knownPeers];
+    // FIX v1.2: offer to ALL current peers
+    const viewers = [...knownPeers].filter(id => id !== userId);
     for (const viewerId of viewers) {
       await createPeerForViewer(viewerId);
     }
-    addChatMessage('System', 'You started sharing your screen.');
+    addChatMessage('System', '📡 You started sharing your screen.');
 
   } catch (e) {
     console.error('[WC] Screen share error:', e);
-    addChatMessage('System', 'Error starting screen share.');
+    localStream = null;
+    addChatMessage('System', e.name === 'NotAllowedError'
+      ? 'Screen share cancelled.'
+      : 'Error starting screen share: ' + e.message);
   }
 }
 
 function stopLocalScreenShare() {
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   isWebClientSharing = false;
-  document.getElementById('btn-web-share').innerHTML = '📡 Share Screen';
-  document.getElementById('btn-web-share').style.background = 'rgba(74,222,128,0.15)';
-  document.getElementById('btn-web-share').style.color = '#4ade80';
-  document.getElementById('btn-web-share').style.borderColor = 'rgba(74,222,128,0.3)';
-  
+
+  const btn = document.getElementById('btn-web-share');
+  btn.innerHTML = '📡 Share Screen';
+  btn.style.background = 'rgba(74,222,128,0.15)';
+  btn.style.color = '#4ade80';
+  btn.style.borderColor = 'rgba(74,222,128,0.3)';
+
   const remoteVid = document.getElementById('remote-stream');
   const ytPlayer = document.getElementById('yt-player');
   if (remoteVid) { remoteVid.style.display = 'none'; remoteVid.srcObject = null; remoteVid.muted = false; }
   if (ytPlayer) ytPlayer.style.display = 'block';
   streamConnected = false;
   showWaitingSplash();
-  
-  Object.values(rtcPeers).forEach(pc => { try { pc.close(); } catch (_) { } });
-  rtcPeers = {};
-  addChatMessage('System', 'You stopped sharing your screen.');
+
+  Object.keys(rtcPeers).forEach(id => closePeer(id));
+  addChatMessage('System', 'Screen share ended.');
 }
 
+// FIX v1.2: close stale peer before creating new one — prevents duplicate / zombie peers
 async function createPeerForViewer(viewerId) {
+  if (rtcPeers[viewerId]) {
+    const state = rtcPeers[viewerId].connectionState;
+    if (state === 'connected' || state === 'connecting') {
+      return rtcPeers[viewerId];
+    }
+    closePeer(viewerId);
+  }
   if (!localStream) return null;
 
   const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -351,17 +364,22 @@ async function createPeerForViewer(viewerId) {
   };
 
   pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') {
+      try { pc.restartIce(); } catch (_) { }
+    }
     if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-      delete rtcPeers[viewerId];
+      setTimeout(() => { if (rtcPeers[viewerId] === pc) delete rtcPeers[viewerId]; }, 3000);
     }
   };
 
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    send({ type: 'signal', targetId: viewerId, signalData: { offer } });
+    send({ type: 'signal', targetId: viewerId, signalData: { offer: pc.localDescription } });
   } catch (e) {
     console.error('[WC] createOffer error:', e);
+    closePeer(viewerId);
+    return null;
   }
 
   return pc;
@@ -369,20 +387,26 @@ async function createPeerForViewer(viewerId) {
 
 async function handleSignal(senderId, signal) {
   if (localStream) {
-    // We are HOSTing from the web client
+    // HOST side
     let pc = rtcPeers[senderId];
     if (!pc) pc = await createPeerForViewer(senderId);
     if (!pc) return;
 
     if (signal.answer) {
-      try { await pc.setRemoteDescription(new RTCSessionDescription(signal.answer)); drainIceQueue(pc); } catch (e) {}
+      try {
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
+          drainIceQueue(pc);
+        }
+      } catch (e) { console.error('[WC] answer error:', e); }
     } else if (signal.candidate) {
       const ice = new RTCIceCandidate(signal.candidate);
-      if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => {});
+      if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
       else pc._iceQueue.push(ice);
     }
+
   } else {
-    // We are VIEWER
+    // VIEWER side
     let pc = rtcPeers[senderId];
     if (!pc) {
       pc = new RTCPeerConnection(ICE_SERVERS);
@@ -397,14 +421,29 @@ async function handleSignal(senderId, signal) {
         if (!e.streams?.[0]) return;
         const remoteVid = document.getElementById('remote-stream');
         const ytPlayer = document.getElementById('yt-player');
-        if (remoteVid) { remoteVid.srcObject = e.streams[0]; remoteVid.style.display = 'block'; remoteVid.muted = false; remoteVid.play().catch(() => { }); }
+        if (remoteVid) {
+          remoteVid.srcObject = e.streams[0];
+          remoteVid.style.display = 'block';
+          remoteVid.muted = false;
+          remoteVid.play().catch(() => {
+            // Autoplay blocked — prompt user
+            remoteVid.muted = true;
+            remoteVid.play().then(() => {
+              addChatMessage('System', '🔇 Video muted (autoplay policy). Click the video to unmute.');
+              remoteVid.addEventListener('click', () => { remoteVid.muted = false; }, { once: true });
+            }).catch(() => { });
+          });
+        }
         if (ytPlayer) ytPlayer.style.display = 'none';
         streamConnected = true;
         hideWaitingSplash();
-        addChatMessage('System', '🎥 Live screen share connected!');
+        addChatMessage('System', '🎥 Screen share connected!');
       };
 
       pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed') {
+          try { pc.restartIce(); } catch (_) { }
+        }
         if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
           const remoteVid = document.getElementById('remote-stream');
           const ytPlayer = document.getElementById('yt-player');
@@ -413,33 +452,28 @@ async function handleSignal(senderId, signal) {
           streamConnected = false;
           showWaitingSplash();
           addChatMessage('System', 'Screen share ended.');
-          delete rtcPeers[senderId];
+          setTimeout(() => { if (rtcPeers[senderId] === pc) delete rtcPeers[senderId]; }, 2000);
         }
       };
     }
 
-    try {
-      if (signal.offer) {
+    if (signal.offer) {
+      try {
         await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        send({ type: 'signal', targetId: senderId, signalData: { answer } });
+        send({ type: 'signal', targetId: senderId, signalData: { answer: pc.localDescription } });
         drainIceQueue(pc);
-      } else if (signal.candidate) {
-        const ice = new RTCIceCandidate(signal.candidate);
-        if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
-        else pc._iceQueue.push(ice);
+      } catch (e) {
+        console.error('[WC] offer error:', e);
+        closePeer(senderId);
       }
-    } catch (e) {
-      console.error('[WC] Signal error:', e);
+    } else if (signal.candidate) {
+      const ice = new RTCIceCandidate(signal.candidate);
+      if (pc.remoteDescription?.type) pc.addIceCandidate(ice).catch(() => { });
+      else pc._iceQueue.push(ice);
     }
   }
-}
-
-function drainIceQueue(pc) {
-  if (!pc._iceQueue?.length) return;
-  pc._iceQueue.forEach(c => pc.addIceCandidate(c).catch(() => { }));
-  pc._iceQueue = [];
 }
 
 // ── 8. Chat ───────────────────────────────────────────────
@@ -455,25 +489,49 @@ function sendChat() {
   input.value = '';
 }
 
+// FIX v1.2: proper chat scroll that doesn't hijack when user is reading old messages,
+// and compensates scroll position when old messages are trimmed from top.
 function addChatMessage(author, text) {
   const box = document.getElementById('chat-messages');
   if (!box) return;
+
+  // Check if user is already near the bottom BEFORE we add the new message
+  const isNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+
   const div = document.createElement('div');
-  div.className = author === 'System' ? 'msg system' : 'msg';
-  if (author !== 'System') {
-    div.innerHTML = `<span class="author">${esc(author)}:</span> <span class="text"></span>`;
-    div.querySelector('.text').textContent = text;
-  } else {
+  if (author === 'System') {
+    div.className = 'msg system';
     div.textContent = text;
+  } else {
+    div.className = 'msg';
+    const authorEl = document.createElement('span');
+    authorEl.className = 'author';
+    authorEl.textContent = esc(author) + ':';
+    const textEl = document.createElement('span');
+    textEl.textContent = ' ' + text;
+    div.appendChild(authorEl);
+    div.appendChild(textEl);
   }
+
   box.appendChild(div);
 
-  // Keep maximum of 100 messages to prevent scrolling/DOM lag:
-  while (box.children.length > 100) {
-    box.removeChild(box.firstChild);
+  // Trim oldest messages but compensate scroll so view doesn't jump
+  const MAX_MSGS = 150;
+  while (box.children.length > MAX_MSGS) {
+    const removed = box.firstChild;
+    const removedH = removed.offsetHeight || 0;
+    box.removeChild(removed);
+    // If user was NOT near bottom, compensate so their view stays stable
+    if (!isNearBottom) {
+      box.scrollTop = Math.max(0, box.scrollTop - removedH);
+    }
   }
 
-  box.scrollTop = box.scrollHeight;
+  // Only auto-scroll if the user was already near the bottom
+  if (isNearBottom) {
+    // Defer to next frame to avoid forced-reflow
+    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+  }
 }
 
 function esc(str) {

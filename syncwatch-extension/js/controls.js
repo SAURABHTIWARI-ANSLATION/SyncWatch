@@ -1,4 +1,4 @@
-// SyncWatch Controls Overlay — controls.js  (FIXED v1.1)
+// SyncWatch Controls Overlay — controls.js  (FIXED v1.2)
 'use strict';
 
 const BACKEND = 'https://syncwatch-64jv.onrender.com';
@@ -45,7 +45,6 @@ window.addEventListener('message', e => {
       addMsg('sys', `${msg.userId} left`);
       break;
 
-    // FIX: wrapped in block {} to avoid "const in case" SyntaxError in strict mode
     case 'screenShareStarted': {
       isSharing = true;
       const btn = document.getElementById('btn-share');
@@ -65,7 +64,7 @@ window.addEventListener('message', e => {
     }
 
     case 'screenShareError':
-      addMsg('sys', `Screen share error: ${msg.msg}`);
+      addMsg('sys', `⚠ Screen share error: ${msg.msg}`);
       break;
 
     case 'streamEnded':
@@ -125,6 +124,9 @@ document.getElementById('btn-chat').addEventListener('click', () => {
     document.getElementById('chat-badge').textContent = '0';
     document.getElementById('chat-badge').classList.add('hidden');
     document.getElementById('chat-input').focus();
+    // Scroll to bottom when opening
+    const box = document.getElementById('chat-msgs');
+    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
   }
 });
 
@@ -152,35 +154,60 @@ document.getElementById('room-id-lbl').addEventListener('click', () => {
   });
 });
 
-// ── Helper functions ──────────────────────────────────────────────
+// ── Chat message helper ───────────────────────────────────────────
+// FIX v1.2: stable scroll — don't hijack when user is reading history,
+//           compensate scroll when trimming old messages from top.
+
+const MAX_CHAT_MSGS = 150;
 
 function addMsg(type, text, author) {
   const box = document.getElementById('chat-msgs');
+
+  // Snapshot scroll position BEFORE adding
+  const isNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+
   const div = document.createElement('div');
   if (type === 'sys') {
     div.className = 'msg sys';
     div.textContent = text;
   } else {
     div.className = 'msg';
-    div.innerHTML = `<span class="author">${esc(author || '?')}:</span>`;
+    const a = document.createElement('span');
+    a.className = 'author';
+    a.textContent = esc(author || '?') + ':';
     const t = document.createElement('span');
     t.textContent = ' ' + text;
+    div.appendChild(a);
     div.appendChild(t);
   }
+
   box.appendChild(div);
-  
-  // Keep maximum 100 messages
-  while (box.children.length > 100) {
-    box.removeChild(box.firstChild);
+
+  // Trim oldest messages, preserving scroll position for users reading history
+  while (box.children.length > MAX_CHAT_MSGS) {
+    const removed = box.firstChild;
+    const removedH = removed.offsetHeight || 0;
+    box.removeChild(removed);
+    if (!isNearBottom) {
+      box.scrollTop = Math.max(0, box.scrollTop - removedH);
+    }
   }
 
-  box.scrollTop = box.scrollHeight;
+  // Auto-scroll only if user was already at (or near) the bottom
+  if (isNearBottom) {
+    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+  } else if (!chatOpen) {
+    // Panel closed and unread — bump badge
+    // (badge already bumped for type=user in the caller; skip double bump)
+  }
 }
+
+// ── Other helpers ─────────────────────────────────────────────────
 
 function bumpUnread() {
   unreadCount++;
   const badge = document.getElementById('chat-badge');
-  badge.textContent = unreadCount > 9 ? '9+' : unreadCount;
+  badge.textContent = unreadCount > 9 ? '9+' : String(unreadCount);
   badge.classList.remove('hidden');
 }
 
