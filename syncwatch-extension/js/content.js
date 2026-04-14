@@ -351,6 +351,14 @@ function removeViewerVideo() {
 // ── Screen Share — HOST ───────────────────────────────────────────
 
 async function startScreenShare() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    postToOverlay({ 
+      type: 'screenShareError', 
+      msg: 'Screen sharing is not supported on this device/browser.' 
+    });
+    return;
+  }
+
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },

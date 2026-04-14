@@ -278,6 +278,10 @@ document.getElementById('btn-web-share').addEventListener('click', () => {
 });
 
 async function startLocalScreenShare() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    addChatMessage('System', '❌ Screen sharing is not supported on this device/browser (e.g., Mobile devices).');
+    return;
+  }
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
