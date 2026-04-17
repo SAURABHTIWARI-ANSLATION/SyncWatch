@@ -611,9 +611,12 @@ function addChatMessage(author, text) {
 
   // Only auto-scroll if the user was already near the bottom
   if (isNearBottom) {
-    // Defer to next frame to avoid forced-reflow
-    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+    box.scrollTop = box.scrollHeight;
     resetUnread();
+    
+    // If there's an image, scroll again once it actually loads to avoid layout jump
+    const lastImg = div.querySelector('img');
+    if (lastImg) lastImg.onload = () => { box.scrollTop = box.scrollHeight; };
   } else {
     // Increment unread if message from someone else
     if (author !== 'You' && author !== 'System') {

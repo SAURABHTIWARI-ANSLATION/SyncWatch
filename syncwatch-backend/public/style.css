@@ -112,6 +112,8 @@ body {
 /* ── Sidebar ── */
 .sidebar {
   width: 350px;
+  min-width: 350px;
+  flex-shrink: 0;
   background: var(--surface);
   border-radius: var(--radius);
   display: flex;
@@ -133,13 +135,21 @@ body {
   overflow-y: auto;
   padding: 16px;
   display: flex; flex-direction: column; gap: 8px;
-  scroll-behavior: smooth;
+  /* Removed smooth scroll to prevent 'fluctuation/bouncing' during new messages */
 }
 
 .msg { font-size: 14px; line-height: 1.4; overflow-wrap: break-word; word-break: break-word; }
 .msg.system { color: var(--text-muted); font-style: italic; font-size: 12px; text-align: center; margin: 10px 0; }
 .msg span.author { color: var(--accent); font-weight: 700; margin-right: 6px; }
-.msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; display: block; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+.msg img { 
+  max-width: 100%; 
+  min-height: 50px; /* Prevent total collapse before load */
+  border-radius: 8px; 
+  margin-top: 6px; 
+  display: block; 
+  border: 1px solid rgba(255,255,255,0.1); 
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3); 
+}
 
 .chat-input-row {
   padding: 16px;
