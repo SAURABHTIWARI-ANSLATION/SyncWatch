@@ -145,6 +145,9 @@ function handleMessage(msg) {
       // Set user label in chat
       addChatMessage('System', `Connected as ${userId}`);
 
+      // Sync state with extension so popup chat works silently without on-page overlay
+      window.postMessage({ type: 'SYNCWATCH_WEB_JOIN', roomId, userId, isHost: (userId === 'Host') }, '*');
+
       knownPeers.clear();
       (msg.otherUsers || []).forEach(id => knownPeers.add(id));
       showWaitingSplash();

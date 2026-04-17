@@ -184,6 +184,14 @@ let overlayHandshakeReceived = false;
 function injectOverlay() {
   // PRD Fix #6: Never inject overlay in sub-frames
   if (!IS_TOP_FRAME) return;
+  
+  // HOST LAYOUT FIX: Never inject on-page overlay for the Host. 
+  // This prevents the chat UI from polluting their active screen share stream.
+  if (isHost) {
+    console.log('[SW] Host mode: Skipping UI injection to keep screen share clean.');
+    return;
+  }
+
   if (document.getElementById('sw-overlay-host')) return;
 
   const host = document.createElement('div');
