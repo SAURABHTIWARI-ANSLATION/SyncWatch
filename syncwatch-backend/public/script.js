@@ -145,9 +145,6 @@ function handleMessage(msg) {
       // Set user label in chat
       addChatMessage('System', `Connected as ${userId}`);
 
-      // Broadcast to extension (web-bridge.js) so it awakens chat overlay on other tabs
-      window.postMessage({ type: 'SYNCWATCH_WEB_JOIN', roomId, userId }, '*');
-
       knownPeers.clear();
       (msg.otherUsers || []).forEach(id => knownPeers.add(id));
       showWaitingSplash();
