@@ -185,18 +185,11 @@ function injectOverlay() {
   // PRD Fix #6: Never inject overlay in sub-frames
   if (!IS_TOP_FRAME) return;
   
-  // HOST LAYOUT FIX: Never inject on-page overlay for the Host. 
-  // This prevents the chat UI from polluting their active screen share stream.
-  if (isHost) {
-    console.log('[SW] Host mode: Skipping UI injection to keep screen share clean.');
-    return;
-  }
-
   if (document.getElementById('sw-overlay-host')) return;
 
   const host = document.createElement('div');
   host.id = 'sw-overlay-host';
-  host.style.cssText = 'position:fixed;bottom:0;left:0;width:100%;height:56px;z-index:2147483647;pointer-events:none;transition:height 0.2s;';
+  host.style.cssText = 'position:fixed !important; bottom:0 !important; left:0 !important; right:0 !important; top:auto !important; width:100% !important; height:56px; z-index:2147483647 !important; pointer-events:none; transition:height 0.2s; visibility:visible !important; display:block !important;';
   document.body.appendChild(host);
 
   // Shadow DOM encapsulates the entire overlay, defeating page-level CSP style rules
@@ -233,12 +226,12 @@ function injectFallbackUI(shadow) {
       * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
       #fb-bar {
         width: 100%; height: 56px;
-        background: rgba(5, 8, 15, 0.96);
-        backdrop-filter: blur(12px);
-        border-top: 1px solid rgba(124,159,255,0.15);
-        display: flex; align-items: center; gap: 8px;
-        padding: 0 16px; pointer-events: auto;
-        color: #f8fafc; font-size: 13px;
+        background: #0f172a !important;
+        border-top: 1px solid rgba(124,159,255,0.3) !important;
+        display: flex !important; align-items: center !important; gap: 8px !important;
+        padding: 0 16px !important; pointer-events: auto !important;
+        color: #f8fafc !important; font-size: 13px !important;
+        box-shadow: 0 -4px 20px rgba(0,0,0,0.6) !important;
       }
       .logo { background: #7c9fff; color: #000; font-weight: 900; font-size: 11px;
               padding: 4px 10px; border-radius: 20px; flex-shrink: 0; }
@@ -544,7 +537,9 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'chat':
-      postToOverlay({ type: 'chat', text: msg.text, userId: msg.userId });
+      if (msg.userId !== userId) {
+        postToOverlay({ type: 'chat', text: msg.text, userId: msg.userId });
+      }
       break;
 
     case 'user_joined':

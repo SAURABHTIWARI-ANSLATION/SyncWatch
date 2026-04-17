@@ -146,10 +146,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   switch (msg.action) {
     case 'syncFromWeb':
-      globalRoom = { roomId: msg.roomId, persistentUserId: msg.userId, isHost: msg.isHost || false, memberCount: 1, otherUsers: [], hostOnlyMode: false };
-      saveDb();
-      offscreenSend('connect', { roomId: msg.roomId, userId: msg.userId });
-      sendResponse({ ok: true });
+      initPromise.then(() => {
+        globalRoom = { roomId: msg.roomId, persistentUserId: msg.userId, userId: 'Host', isHost: msg.isHost || false, memberCount: 1, otherUsers: [], hostOnlyMode: false };
+        saveDb();
+        offscreenSend('connect', { roomId: msg.roomId, userId: msg.userId });
+        sendResponse({ ok: true });
+      });
       return true;
 
     case 'createRoom':
@@ -220,15 +222,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'syncRequest':
       initPromise.then(() => {
         if (globalRoom) {
-          const payload = { ...msg };
+          let finalPayload = { ...msg };
           if (msg.action === 'playbackEvent') {
-            Object.assign(payload, msg.event);
+            finalPayload = { ...msg.event };
           } else if (msg.action === 'sendChat') {
-            payload.type = 'chat';
+            finalPayload = { type: 'chat', text: msg.text, userId: globalRoom.userId };
           } else if (msg.action === 'syncRequest') {
-            payload.type = 'sync_request';
+            finalPayload = { type: 'sync_request' };
           }
-          offscreenSend('send', payload);
+          offscreenSend('send', finalPayload);
         }
       });
       break;
