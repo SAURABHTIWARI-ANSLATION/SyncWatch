@@ -13,7 +13,7 @@ let globalRoom = null; // Single global session state across all tabs
 
 // ── Init ──────────────────────────────────────────────────────────
 
-chrome.storage.session.get(['globalRoom']).then(d => {
+let initPromise = chrome.storage.session.get(['globalRoom']).then(d => {
   globalRoom = d.globalRoom || null;
   console.log('[SW Background] DB initialized:', globalRoom);
 });
@@ -84,7 +84,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 
   switch (msg.sw) {
     case 'from_server':
-      handleServerMessage(msg.payload);
+      initPromise.then(() => handleServerMessage(msg.payload));
       break;
     case 'ws_closed':
       broadcastToAllTabs({ sw: 'disconnected' });
@@ -184,22 +184,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'getStatus':
-      sendResponse({
-        room: globalRoom || null,
-        connected: globalRoom ? true : false
+      initPromise.then(() => {
+        sendResponse({
+          room: globalRoom || null,
+          connected: globalRoom ? true : false
+        });
       });
-      break;
+      return true;
 
     // PRD Fix: hostOnlyToggle — store in db + relay to room via WS
     case 'hostOnlyToggle':
-      if (globalRoom) {
-        globalRoom.hostOnlyMode = msg.state;
-        saveDb();
-        offscreenSend('send', {
-          type: 'host_only_mode',
-          state: msg.state
-        });
-      }
+      initPromise.then(() => {
+        if (globalRoom) {
+          globalRoom.hostOnlyMode = msg.state;
+          saveDb();
+          offscreenSend('send', {
+            type: 'host_only_mode',
+            state: msg.state
+          });
+        }
+      });
       break;
 
     case 'playbackEvent':
@@ -207,17 +211,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'signal':
     case 'heartbeat':
     case 'syncRequest':
-      if (globalRoom) {
-        const payload = { ...msg };
-        if (msg.action === 'playbackEvent') {
-          Object.assign(payload, msg.event);
-        } else if (msg.action === 'sendChat') {
-          payload.type = 'chat';
-        } else if (msg.action === 'syncRequest') {
-          payload.type = 'sync_request';
+      initPromise.then(() => {
+        if (globalRoom) {
+          const payload = { ...msg };
+          if (msg.action === 'playbackEvent') {
+            Object.assign(payload, msg.event);
+          } else if (msg.action === 'sendChat') {
+            payload.type = 'chat';
+          } else if (msg.action === 'syncRequest') {
+            payload.type = 'sync_request';
+          }
+          offscreenSend('send', payload);
         }
-        offscreenSend('send', payload);
-      }
+      });
       break;
 
     case 'requestScreenShare':
