@@ -145,6 +145,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const senderTabId = sender.tab ? sender.tab.id : null;
 
   switch (msg.action) {
+    case 'syncFromWeb':
+      globalRoom = { roomId: msg.roomId, persistentUserId: msg.userId, isHost: false, memberCount: 1, otherUsers: [], hostOnlyMode: false };
+      saveDb();
+      offscreenSend('connect', { roomId: msg.roomId, userId: msg.userId });
+      sendResponse({ ok: true });
+      return true;
+
     case 'createRoom':
       fetch(`${BACKEND_HTTP}/room/create`, {
         method: 'POST',

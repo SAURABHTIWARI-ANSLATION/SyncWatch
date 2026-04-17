@@ -20,6 +20,15 @@
       ],
       "all_frames": true,
       "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "*://*.onrender.com/*"
+      ],
+      "js": [
+        "js/web-bridge.js"
+      ],
+      "run_at": "document_start"
     }
   ],
   "action": {
