@@ -28,9 +28,13 @@ chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
   chrome.runtime.sendMessage({ action: 'getStatus', tabId: currentTabId }, resp => {
     if (resp && resp.room && resp.connected) {
       showRoomBanner(resp.room.roomId, resp.room.memberCount);
+      showChatTab();
     }
   });
 });
+
+let unreadCount = 0;
+let chatTabActive = false;
 
 // Listen for updates from background while popup is open
 chrome.runtime.onMessage.addListener(msg => {
@@ -39,6 +43,7 @@ chrome.runtime.onMessage.addListener(msg => {
     case 'joined':
       if (msg.tabId === currentTabId) {
         showRoomBanner(msg.roomId, msg.memberCount);
+        showChatTab();
         setLoading(false, 'btn-create');
         setLoading(false, 'btn-join');
       }
@@ -47,6 +52,11 @@ chrome.runtime.onMessage.addListener(msg => {
     case 'user_left':
       if (msg.tabId === currentTabId && currentRoomId) {
         document.getElementById('banner-members').textContent = msg.memberCount;
+      }
+      break;
+    case 'chat':
+      if (msg.tabId === currentTabId) {
+        addChatMessage(msg.userId, msg.text);
       }
       break;
     case 'error':
@@ -64,12 +74,80 @@ document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    
     tab.classList.add('active');
     const panelId = 'panel-' + tab.dataset.tab;
-    document.getElementById(panelId).classList.add('active');
+    const panel = document.getElementById(panelId);
+    if(panel) panel.classList.add('active');
+    
+    if (tab.dataset.tab === 'chat') {
+      chatTabActive = true;
+      unreadCount = 0;
+      updateChatBadge();
+      const box = document.getElementById('chat-msgs');
+      setTimeout(() => { box.scrollTop = box.scrollHeight; }, 10);
+    } else {
+      chatTabActive = false;
+    }
     clearError();
   });
 });
+
+// ── Chat sending ──────────────────────────────────────────────────
+function sendChat() {
+  const inp = document.getElementById('chat-input');
+  const text = inp.value.trim();
+  if (!text) return;
+
+  chrome.runtime.sendMessage({ action: 'sendChat', tabId: currentTabId, text }, () => {
+    addChatMessage('You', text);
+    inp.value = '';
+  });
+}
+
+document.getElementById('btn-send-chat').addEventListener('click', sendChat);
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendChat();
+});
+
+function addChatMessage(author, text) {
+  const box = document.getElementById('chat-msgs');
+  const div = document.createElement('div');
+  div.className = author === 'System' ? 'msg msg-sys' : 'msg';
+  
+  if (author !== 'System') {
+    const a = document.createElement('span');
+    a.className = 'msg-author';
+    a.textContent = author + ':';
+    div.appendChild(a);
+  }
+  
+  const t = document.createElement('span');
+  t.textContent = text;
+  div.appendChild(t);
+  
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+
+  if (!chatTabActive && author !== 'You' && author !== 'System') {
+    unreadCount++;
+    updateChatBadge();
+  }
+}
+
+function updateChatBadge() {
+  const badge = document.getElementById('chat-badge');
+  if (unreadCount > 0) {
+    badge.textContent = unreadCount;
+    badge.style.display = 'inline-block';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function showChatTab() {
+  document.getElementById('tab-chat').classList.remove('hidden');
+}
 
 // ── Create Room ───────────────────────────────────────────────────
 document.getElementById('btn-create').addEventListener('click', () => {
@@ -80,6 +158,7 @@ document.getElementById('btn-create').addEventListener('click', () => {
     if (resp.ok) {
       currentRoomId = resp.roomId;
       showInviteBox(resp.roomId);
+      showChatTab();
       // Auto-trigger screen share prompt for the host if they stay in extension
       chrome.tabs.sendMessage(currentTabId, { action: 'autoStartShare' }).catch(() => {});
       
@@ -104,6 +183,7 @@ document.getElementById('btn-join').addEventListener('click', () => {
   chrome.runtime.sendMessage({ action: 'joinRoom', tabId: currentTabId, roomId, userId: persistentUserId }, resp => {
     if (resp.ok) {
       currentRoomId = resp.roomId;
+      showChatTab();
       // Banner will appear on 'joined' message
     } else {
       setLoading(false, 'btn-join');
@@ -121,6 +201,7 @@ document.getElementById('inp-room-id').addEventListener('input', e => {
 document.getElementById('btn-leave-room').addEventListener('click', () => {
   chrome.runtime.sendMessage({ action: 'leaveRoom', tabId: currentTabId }, () => {
     hideRoomBanner();
+    document.getElementById('tab-chat').classList.add('hidden');
     currentRoomId = null;
     clearError();
   });
@@ -199,3 +280,4 @@ function copyToClipboard(text) {
     ta.remove();
   });
 }
+

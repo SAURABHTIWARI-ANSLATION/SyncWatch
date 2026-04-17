@@ -228,8 +228,9 @@ body {
 
   <!-- Tabs -->
   <div class="tabs">
-    <div class="tab active" data-tab="create">🎬 Create Room</div>
-    <div class="tab" data-tab="join">🔗 Join Room</div>
+    <div class="tab active" data-tab="create">🎬 Create</div>
+    <div class="tab" data-tab="join">🔗 Join</div>
+    <div class="tab hidden" id="tab-chat" data-tab="chat">💬 Chat <span id="chat-badge" style="display:none;background:var(--red);color:#fff;font-size:8px;padding:1px 4px;border-radius:10px;">0</span></div>
   </div>
 
   <!-- Create Panel -->
@@ -256,6 +257,27 @@ body {
       <input type="text" id="inp-room-id" placeholder="e.g. AB12CD34" maxlength="8">
     </div>
     <button class="btn btn-primary" id="btn-join">Join Room</button>
+  </div>
+
+  <!-- Chat Panel -->
+  <style>
+    #panel-chat { flex-direction: column; height: 320px; }
+    #chat-msgs { flex: 1; overflow-y: auto; background: var(--surface); border-radius: 8px 8px 0 0; padding: 10px; display: flex; flex-direction: column; gap: 8px; border: 1px solid rgba(255,255,255,0.05); }
+    .msg { font-size: 12px; line-height: 1.4; word-break: break-all; }
+    .msg-sys { color: var(--muted); font-style: italic; font-size: 11px; text-align: center; }
+    .msg-author { color: var(--accent); font-weight: 800; margin-right: 4px; }
+    .chat-row { display: flex; gap: 6px; padding: 8px; background: var(--surface-light); border-radius: 0 0 8px 8px; border: 1px solid rgba(255,255,255,0.05); border-top: none; }
+    .chat-row input { flex: 1; background: transparent; border: none; color: var(--text); outline: none; font-size: 13px; }
+    .chat-row button { background: var(--accent); color: #000; border: none; border-radius: 6px; padding: 4px 10px; font-weight: 700; cursor: pointer; }
+  </style>
+  <div class="panel" id="panel-chat">
+    <div id="chat-msgs">
+      <div class="msg-sys">Welcome to SyncWatch Chat!</div>
+    </div>
+    <div class="chat-row">
+      <input type="text" id="chat-input" placeholder="Type a message..." maxlength="300">
+      <button id="btn-send-chat">→</button>
+    </div>
   </div>
 
   <div id="error-msg"></div>

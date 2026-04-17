@@ -124,7 +124,10 @@ function handleServerMessage(tabId, msg) {
         }
         saveDb();
       }
-      sendToTab(tabId, { sw: msg.type, ...msg });
+      // Broadcast to both the content script and any open extension pages (like the popup)
+      const broadcastMsg = { sw: msg.type, tabId, ...msg };
+      sendToTab(tabId, broadcastMsg);
+      chrome.runtime.sendMessage(broadcastMsg).catch(() => {}); // Popup might be closed, ignore error
       break;
 
     // PRD Fix: relay sync_request so the host can respond with current video state
