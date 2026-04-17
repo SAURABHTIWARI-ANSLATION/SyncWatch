@@ -9,17 +9,17 @@
 'use strict';
 
 const BACKEND_HTTP = 'https://syncwatch-64jv.onrender.com';
-let db = {}; // Per-tab state (synced with storage)
+let globalRoom = null; // Single global session state across all tabs
 
 // ── Init ──────────────────────────────────────────────────────────
 
-chrome.storage.session.get(['db']).then(d => {
-  db = d.db || {};
-  console.log('[SW Background] DB initialized:', db);
+chrome.storage.session.get(['globalRoom']).then(d => {
+  globalRoom = d.globalRoom || null;
+  console.log('[SW Background] DB initialized:', globalRoom);
 });
 
 function saveDb() {
-  chrome.storage.session.set({ db });
+  chrome.storage.session.set({ globalRoom });
 }
 
 // ── Alarm-based Keep-Alive ────────────────────────────────────────
@@ -55,23 +55,22 @@ async function setupOffscreen() {
   });
 }
 
-function sendToTab(tabId, msg, retries = 3) {
-  if (!tabId) return;
-  chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }).catch(() => {
-    if (retries > 0) {
-      setTimeout(() => sendToTab(tabId, msg, retries - 1), 500);
-    } else {
-      console.warn(`[SW Background] Failed to send to tab ${tabId} after retries.`);
-    }
+function broadcastToAllTabs(msg) {
+  chrome.tabs.query({}, tabs => {
+    tabs.forEach(t => {
+      chrome.tabs.sendMessage(t.id, msg, { frameId: 0 }).catch(() => {});
+    });
   });
+  // Also send to extension pages (popup)
+  chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
-async function offscreenSend(tabId, swAction, payload = null) {
+async function offscreenSend(swAction, payload = null) {
   await setupOffscreen();
   chrome.runtime.sendMessage({
     target: 'offscreen',
     sw: swAction,
-    tabId,
+    tabId: 'GLOBAL', // Use a single global socket for the browser
     roomId: payload?.roomId,
     userId: payload?.userId,
     payload
@@ -83,77 +82,59 @@ async function offscreenSend(tabId, swAction, payload = null) {
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.target !== 'background') return;
 
-  const tabId = msg.tabId;
   switch (msg.sw) {
     case 'from_server':
-      handleServerMessage(tabId, msg.payload);
+      handleServerMessage(msg.payload);
       break;
     case 'ws_closed':
-      sendToTab(tabId, { sw: 'disconnected' });
+      broadcastToAllTabs({ sw: 'disconnected' });
       break;
     case 'ws_error':
-      sendToTab(tabId, { sw: 'error', msg: msg.msg });
+      broadcastToAllTabs({ sw: 'error', msg: msg.msg });
       break;
   }
 });
 
-function handleServerMessage(tabId, msg) {
-  if (!tabId) return;
-
-  switch (msg.type) {
-    case 'joined':
-      if (!db[tabId]) db[tabId] = {};
-      db[tabId].userId = msg.userId;
-      db[tabId].roomId = msg.roomId;
-      db[tabId].memberCount = msg.memberCount;
-      db[tabId].otherUsers = msg.otherUsers || [];
-      saveDb();
-      // PRD Fix: forward isHost so content script can enforce RBAC
-      sendToTab(tabId, { sw: 'joined', ...msg, isHost: db[tabId].isHost || false });
-      break;
-
-    case 'user_joined':
-    case 'user_left':
-      if (db[tabId]) {
-        db[tabId].memberCount = msg.memberCount;
-        if (msg.type === 'user_joined') {
-          if (!db[tabId].otherUsers) db[tabId].otherUsers = [];
-          if (!db[tabId].otherUsers.includes(msg.userId)) db[tabId].otherUsers.push(msg.userId);
-        } else {
-          if (db[tabId].otherUsers) db[tabId].otherUsers = db[tabId].otherUsers.filter(id => id !== msg.userId);
-        }
-        saveDb();
-      }
-      // Broadcast to both the content script and any open extension pages (like the popup)
-      const broadcastMsg = { sw: msg.type, tabId, ...msg };
-      sendToTab(tabId, broadcastMsg);
-      chrome.runtime.sendMessage(broadcastMsg).catch(() => {}); // Popup might be closed, ignore error
-      break;
-
-    // PRD Fix: relay sync_request so the host can respond with current video state
-    case 'sync_request':
-      sendToTab(tabId, { sw: 'sync_request', fromUserId: msg.userId });
-      break;
-
-    // PRD Fix: relay host_only_mode changes to all room members
-    case 'host_only_mode':
-      if (db[tabId]) {
-        db[tabId].hostOnlyMode = msg.state;
-        saveDb();
-      }
-      sendToTab(tabId, { sw: 'host_only_mode', state: msg.state, userId: msg.userId });
-      break;
-
-    case 'play':
-    case 'pause':
-    case 'seek':
-    case 'sync':
-    case 'chat':
-    case 'signal':
-    case 'error':
-      sendToTab(tabId, { sw: msg.type, ...msg });
-      break;
+function handleServerMessage(msg) {
+  if (msg.type === 'joined') {
+    if (!globalRoom) globalRoom = {};
+    globalRoom.userId = msg.userId;
+    globalRoom.roomId = msg.roomId;
+    globalRoom.memberCount = msg.memberCount;
+    globalRoom.otherUsers = msg.otherUsers || [];
+    saveDb();
+    broadcastToAllTabs({ sw: 'joined', ...msg, isHost: globalRoom.isHost || false });
+    return;
   }
+
+  if (msg.type === 'user_joined' || msg.type === 'user_left') {
+    if (globalRoom) {
+      globalRoom.memberCount = msg.memberCount;
+      if (msg.type === 'user_joined') {
+        if (!globalRoom.otherUsers) globalRoom.otherUsers = [];
+        if (!globalRoom.otherUsers.includes(msg.userId)) globalRoom.otherUsers.push(msg.userId);
+      } else {
+        if (globalRoom.otherUsers) globalRoom.otherUsers = globalRoom.otherUsers.filter(id => id !== msg.userId);
+      }
+      saveDb();
+    }
+  }
+
+  if (msg.type === 'host_only_mode') {
+    if (globalRoom) {
+      globalRoom.hostOnlyMode = msg.state;
+      saveDb();
+    }
+  }
+
+  // PRD Fix: relay sync_request so the host can respond with current video state
+  if (msg.type === 'sync_request') {
+    broadcastToAllTabs({ sw: 'sync_request', fromUserId: msg.userId });
+    return;
+  }
+
+  const broadcastMsg = { sw: msg.type, ...msg };
+  broadcastToAllTabs(broadcastMsg);
 }
 
 // ── Handle messages FROM Content/Popup ────────────────────────────
@@ -172,10 +153,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then(r => r.json())
         .then(data => {
           const { roomId, hostId } = data;
-          const tabId = msg.tabId;
-          db[tabId] = { roomId, hostId, persistentUserId: msg.userId, isHost: true, memberCount: 1, otherUsers: [], hostOnlyMode: false };
+          globalRoom = { roomId, hostId, persistentUserId: msg.userId, isHost: true, memberCount: 1, otherUsers: [], hostOnlyMode: false };
           saveDb();
-          offscreenSend(tabId, 'connect', { roomId, userId: msg.userId });
+          offscreenSend('connect', { roomId, userId: msg.userId });
           sendResponse({ ok: true, roomId });
         })
         .catch(e => sendResponse({ ok: false, error: e.message }));
@@ -187,40 +167,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then(r => r.json())
         .then(data => {
           if (!data.exists) return sendResponse({ ok: false, error: `Room "${rId}" not found.` });
-          const tabId = msg.tabId;
-          db[tabId] = { roomId: rId, persistentUserId: msg.userId, isHost: false, memberCount: 0, otherUsers: [], hostOnlyMode: false };
+          globalRoom = { roomId: rId, persistentUserId: msg.userId, isHost: false, memberCount: 0, otherUsers: [], hostOnlyMode: false };
           saveDb();
-          offscreenSend(tabId, 'connect', { roomId: rId, userId: msg.userId });
+          offscreenSend('connect', { roomId: rId, userId: msg.userId });
           sendResponse({ ok: true, roomId: rId });
         })
         .catch(e => sendResponse({ ok: false, error: e.message }));
       return true;
 
     case 'leaveRoom':
-      const ltId = msg.tabId || senderTabId;
-      if (ltId) {
-        offscreenSend(ltId, 'close');
-        delete db[ltId];
-        saveDb();
-        sendToTab(ltId, { sw: 'left' });
-      }
+      offscreenSend('close');
+      globalRoom = null;
+      saveDb();
+      broadcastToAllTabs({ sw: 'left' });
       sendResponse({ ok: true });
       break;
 
     case 'getStatus':
-      const stId = msg.tabId || senderTabId;
       sendResponse({
-        room: stId ? (db[stId] || null) : null,
-        connected: stId ? true : false
+        room: globalRoom || null,
+        connected: globalRoom ? true : false
       });
       break;
 
     // PRD Fix: hostOnlyToggle — store in db + relay to room via WS
     case 'hostOnlyToggle':
-      if (senderTabId && db[senderTabId]) {
-        db[senderTabId].hostOnlyMode = msg.state;
+      if (globalRoom) {
+        globalRoom.hostOnlyMode = msg.state;
         saveDb();
-        offscreenSend(senderTabId, 'send', {
+        offscreenSend('send', {
           type: 'host_only_mode',
           state: msg.state
         });
@@ -232,7 +207,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'signal':
     case 'heartbeat':
     case 'syncRequest':
-      if (senderTabId) {
+      if (globalRoom) {
         const payload = { ...msg };
         if (msg.action === 'playbackEvent') {
           Object.assign(payload, msg.event);
@@ -241,7 +216,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } else if (msg.action === 'syncRequest') {
           payload.type = 'sync_request';
         }
-        offscreenSend(senderTabId, 'send', payload);
+        offscreenSend('send', payload);
       }
       break;
 
@@ -267,6 +242,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ── Tab cleanup ───────────────────────────────────────────────────
 
 chrome.tabs.onRemoved.addListener(tabId => {
-  offscreenSend(tabId, 'close');
-  if (db[tabId]) { delete db[tabId]; saveDb(); }
+  // We no longer nuke the room if any arbitrary tab closes, 
+  // since the room is global. Users explicitly leave via 'leaveRoom'.
+  // However we might want to clean up something if needed.
 });
