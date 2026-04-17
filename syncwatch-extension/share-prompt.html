@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>SyncWatch — Start Sharing</title>
     <style>
@@ -16,12 +17,24 @@
             padding: 20px;
             text-align: center;
         }
+
         .icon {
             font-size: 32px;
             margin-bottom: 12px;
         }
-        h2 { margin: 0 0 8px; font-size: 18px; color: #7c9fff; }
-        p { font-size: 12px; color: #94a3b8; margin-bottom: 24px; }
+
+        h2 {
+            margin: 0 0 8px;
+            font-size: 18px;
+            color: #7c9fff;
+        }
+
+        p {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-bottom: 24px;
+        }
+
         button {
             background: #7c9fff;
             color: white;
@@ -32,10 +45,18 @@
             cursor: pointer;
             transition: transform 0.1s, background 0.2s;
         }
-        button:hover { background: #6366f1; transform: translateY(-1px); }
-        button:active { transform: translateY(0); }
+
+        button:hover {
+            background: #6366f1;
+            transform: translateY(-1px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
     </style>
 </head>
+
 <body>
     <div class="icon">📺</div>
     <h2>Screen Sharing Request</h2>
@@ -43,4 +64,5 @@
     <button id="btn-start">Start Sharing</button>
     <script src="js/share-prompt.js"></script>
 </body>
+
 </html>

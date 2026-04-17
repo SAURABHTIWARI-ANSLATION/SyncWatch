@@ -1,12 +1,18 @@
 // ─────────────────────────────────────────────────────────────────
-// SyncWatch Extension — Background Service Worker (REFACTORED v2.0)
+// SyncWatch Extension — Background Service Worker (REFACTORED v3.0)
+// Fixes (PRD):
+//  - Alarm-based keepalive pings offscreen every ~24s to prevent suspension
+//  - isHost flag forwarded to content script on 'joined'
+//  - sync_request & host_only_mode relayed from server to tab
+//  - hostOnlyToggle action handled here + relayed to room via WS
 // ─────────────────────────────────────────────────────────────────
 'use strict';
 
 const BACKEND_HTTP = 'https://syncwatch-64jv.onrender.com';
 let db = {}; // Per-tab state (synced with storage)
 
-// Initialize db from session storage
+// ── Init ──────────────────────────────────────────────────────────
+
 chrome.storage.session.get(['db']).then(d => {
   db = d.db || {};
   console.log('[SW Background] DB initialized:', db);
@@ -16,13 +22,35 @@ function saveDb() {
   chrome.storage.session.set({ db });
 }
 
+// ── Alarm-based Keep-Alive ────────────────────────────────────────
+// PRD Fix: Register a repeating alarm that pings the offscreen document,
+// ensuring Chrome cannot silently garbage-collect it under memory pressure.
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create('sw-keepalive', { periodInMinutes: 0.4 }); // ~24 seconds
+});
+
+// Also register on service worker startup (handles browser restarts)
+chrome.alarms.create('sw-keepalive', { periodInMinutes: 0.4 });
+
+chrome.alarms.onAlarm.addListener(async alarm => {
+  if (alarm.name !== 'sw-keepalive') return;
+  // Ensure offscreen document exists, then ping it
+  try {
+    await setupOffscreen();
+    chrome.runtime.sendMessage({ target: 'offscreen', sw: 'ping' }).catch(() => { });
+  } catch (e) {
+    console.warn('[SW Background] Keep-alive setupOffscreen error:', e);
+  }
+});
+
 // ── Utility ──────────────────────────────────────────────────────
 
 async function setupOffscreen() {
   if (await chrome.offscreen.hasDocument()) return;
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
-    reasons: ['LOCAL_STORAGE'], // Using LOCAL_STORAGE as a generic reason to stay alive
+    reasons: ['LOCAL_STORAGE'],
     justification: 'Maintaining a stable WebSocket connection for real-time video synchronization.'
   });
 }
@@ -54,7 +82,7 @@ async function offscreenSend(tabId, swAction, payload = null) {
 
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.target !== 'background') return;
-  
+
   const tabId = msg.tabId;
   switch (msg.sw) {
     case 'from_server':
@@ -80,30 +108,46 @@ function handleServerMessage(tabId, msg) {
       db[tabId].memberCount = msg.memberCount;
       db[tabId].otherUsers = msg.otherUsers || [];
       saveDb();
-      sendToTab(tabId, { sw: 'joined', ...msg });
+      // PRD Fix: forward isHost so content script can enforce RBAC
+      sendToTab(tabId, { sw: 'joined', ...msg, isHost: db[tabId].isHost || false });
+      break;
+
+    case 'user_joined':
+    case 'user_left':
+      if (db[tabId]) {
+        db[tabId].memberCount = msg.memberCount;
+        if (msg.type === 'user_joined') {
+          if (!db[tabId].otherUsers) db[tabId].otherUsers = [];
+          if (!db[tabId].otherUsers.includes(msg.userId)) db[tabId].otherUsers.push(msg.userId);
+        } else {
+          if (db[tabId].otherUsers) db[tabId].otherUsers = db[tabId].otherUsers.filter(id => id !== msg.userId);
+        }
+        saveDb();
+      }
+      sendToTab(tabId, { sw: msg.type, ...msg });
+      break;
+
+    // PRD Fix: relay sync_request so the host can respond with current video state
+    case 'sync_request':
+      sendToTab(tabId, { sw: 'sync_request', fromUserId: msg.userId });
+      break;
+
+    // PRD Fix: relay host_only_mode changes to all room members
+    case 'host_only_mode':
+      if (db[tabId]) {
+        db[tabId].hostOnlyMode = msg.state;
+        saveDb();
+      }
+      sendToTab(tabId, { sw: 'host_only_mode', state: msg.state, userId: msg.userId });
       break;
 
     case 'play':
     case 'pause':
     case 'seek':
+    case 'sync':
     case 'chat':
-    case 'user_joined':
-    case 'user_left':
     case 'signal':
     case 'error':
-    case 'sync':
-      if (msg.type === 'user_joined' || msg.type === 'user_left') {
-          if (db[tabId]) {
-              db[tabId].memberCount = msg.memberCount;
-              if (msg.type === 'user_joined') {
-                  if (!db[tabId].otherUsers) db[tabId].otherUsers = [];
-                  if (!db[tabId].otherUsers.includes(msg.userId)) db[tabId].otherUsers.push(msg.userId);
-              } else {
-                  if (db[tabId].otherUsers) db[tabId].otherUsers = db[tabId].otherUsers.filter(id => id !== msg.userId);
-              }
-              saveDb();
-          }
-      }
       sendToTab(tabId, { sw: msg.type, ...msg });
       break;
   }
@@ -112,7 +156,7 @@ function handleServerMessage(tabId, msg) {
 // ── Handle messages FROM Content/Popup ────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.target === 'background' || msg.target === 'offscreen') return; // Filter signals between workers
+  if (msg.target === 'background' || msg.target === 'offscreen') return;
 
   const senderTabId = sender.tab ? sender.tab.id : null;
 
@@ -126,7 +170,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then(data => {
           const { roomId, hostId } = data;
           const tabId = msg.tabId;
-          db[tabId] = { roomId, hostId, persistentUserId: msg.userId, isHost: true, memberCount: 1, otherUsers: [] };
+          db[tabId] = { roomId, hostId, persistentUserId: msg.userId, isHost: true, memberCount: 1, otherUsers: [], hostOnlyMode: false };
           saveDb();
           offscreenSend(tabId, 'connect', { roomId, userId: msg.userId });
           sendResponse({ ok: true, roomId });
@@ -141,7 +185,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .then(data => {
           if (!data.exists) return sendResponse({ ok: false, error: `Room "${rId}" not found.` });
           const tabId = msg.tabId;
-          db[tabId] = { roomId: rId, persistentUserId: msg.userId, isHost: false, memberCount: 0, otherUsers: [] };
+          db[tabId] = { roomId: rId, persistentUserId: msg.userId, isHost: false, memberCount: 0, otherUsers: [], hostOnlyMode: false };
           saveDb();
           offscreenSend(tabId, 'connect', { roomId: rId, userId: msg.userId });
           sendResponse({ ok: true, roomId: rId });
@@ -164,8 +208,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const stId = msg.tabId || senderTabId;
       sendResponse({
         room: stId ? (db[stId] || null) : null,
-        connected: stId ? true : false // Assumption: offscreen handles connection state
+        connected: stId ? true : false
       });
+      break;
+
+    // PRD Fix: hostOnlyToggle — store in db + relay to room via WS
+    case 'hostOnlyToggle':
+      if (senderTabId && db[senderTabId]) {
+        db[senderTabId].hostOnlyMode = msg.state;
+        saveDb();
+        offscreenSend(senderTabId, 'send', {
+          type: 'host_only_mode',
+          state: msg.state
+        });
+      }
       break;
 
     case 'playbackEvent':
@@ -174,16 +230,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'heartbeat':
     case 'syncRequest':
       if (senderTabId) {
-          const payload = { ...msg };
-          if (msg.action === 'playbackEvent') {
-              // Flatten event structure
-              Object.assign(payload, msg.event);
-          } else if (msg.action === 'sendChat') {
-              payload.type = 'chat';
-          } else if (msg.action === 'syncRequest') {
-              payload.type = 'sync_request';
-          }
-          offscreenSend(senderTabId, 'send', payload);
+        const payload = { ...msg };
+        if (msg.action === 'playbackEvent') {
+          Object.assign(payload, msg.event);
+        } else if (msg.action === 'sendChat') {
+          payload.type = 'chat';
+        } else if (msg.action === 'syncRequest') {
+          payload.type = 'sync_request';
+        }
+        offscreenSend(senderTabId, 'send', payload);
       }
       break;
 

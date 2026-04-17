@@ -1,4 +1,9 @@
-// SyncWatch Controls Overlay — controls.js  (FIXED v1.2)
+// SyncWatch Controls Overlay — controls.js  (FIXED v2.0)
+// PRD Fixes:
+//  - Quality selector passed with shareScreen message (#4)
+//  - Host-only toggle button shown only to host, wires up hostOnlyToggle (#7)
+//  - hostOnlyMode message updates banner and button state (#7)
+//  - isHost from 'joined' message controls host-only button visibility (#7)
 'use strict';
 
 const BACKEND = 'https://syncwatch-64jv.onrender.com';
@@ -8,6 +13,8 @@ let unreadCount = 0;
 let isSharing = false;
 let myRoomId = null;
 let myUserId = null;
+let amHost = false;       // PRD Fix #7
+let hostOnlyActive = false;    // PRD Fix #7
 
 // ── Listen for messages FROM content script ───────────────────────
 window.addEventListener('message', e => {
@@ -18,10 +25,16 @@ window.addEventListener('message', e => {
     case 'joined':
       myRoomId = msg.roomId;
       myUserId = msg.userId;
+      amHost = msg.isHost || false;  // PRD Fix #7
       document.getElementById('room-id-lbl').textContent = msg.roomId || '--------';
       document.getElementById('member-count').textContent = msg.memberCount || 1;
       setConnected(true);
-      addMsg('sys', `Joined room ${msg.roomId} as ${msg.userId}`);
+      addMsg('sys', `Joined room ${msg.roomId} as ${msg.userId}${amHost ? ' (host)' : ''}`);
+
+      // PRD Fix #7: only reveal the host-only button to the host
+      if (amHost) {
+        document.getElementById('btn-host-only').style.display = 'flex';
+      }
       break;
 
     case 'play':
@@ -75,6 +88,17 @@ window.addEventListener('message', e => {
       addMsg('sys', 'Screen share stream ended');
       break;
 
+    // PRD Fix #7: update host-only UI for all room members
+    case 'hostOnlyMode':
+      hostOnlyActive = msg.state;
+      const banner = document.getElementById('host-only-banner');
+      banner.classList.toggle('show', hostOnlyActive);
+      const hostBtn = document.getElementById('btn-host-only');
+      hostBtn.classList.toggle('active', hostOnlyActive);
+      hostBtn.title = hostOnlyActive ? 'Host-Only: ON — click to disable' : 'Toggle Host-Only Controls';
+      addMsg('sys', hostOnlyActive ? '🔒 Host-only controls enabled' : '🔓 Host-only controls disabled');
+      break;
+
     case 'error':
       setConnected(false);
       addMsg('sys', `⚠ ${msg.msg}`);
@@ -104,13 +128,22 @@ document.getElementById('btn-sync').addEventListener('click', () => {
   showSyncFlash();
 });
 
+// PRD Fix #4: read quality selection before starting share
 document.getElementById('btn-share').addEventListener('click', () => {
   if (isSharing) {
     window.parent.postMessage({ swOverlay: 'stopShare' }, '*');
   } else {
-    window.parent.postMessage({ swOverlay: 'shareScreen' }, '*');
-    addMsg('sys', 'Starting screen share...');
+    const quality = document.getElementById('quality-select').value;
+    window.parent.postMessage({ swOverlay: 'shareScreen', quality }, '*');
+    addMsg('sys', `Starting screen share (${quality})...`);
   }
+});
+
+// PRD Fix #7: host-only toggle — only the host can toggle; button is hidden for guests
+document.getElementById('btn-host-only').addEventListener('click', () => {
+  if (!amHost) return;
+  hostOnlyActive = !hostOnlyActive;
+  window.parent.postMessage({ swOverlay: 'hostOnlyToggle', state: hostOnlyActive }, '*');
 });
 
 document.getElementById('btn-leave').addEventListener('click', () => {
@@ -132,16 +165,12 @@ document.getElementById('btn-mic').addEventListener('click', () => {
 document.getElementById('btn-chat').addEventListener('click', () => {
   chatOpen = !chatOpen;
   document.getElementById('chat-panel').classList.toggle('open', chatOpen);
-  
-  // Tell parent (content script) to resize the iframe container
   window.parent.postMessage({ swOverlay: 'toggleChatPanel', open: chatOpen }, '*');
-
   if (chatOpen) {
     unreadCount = 0;
     document.getElementById('chat-badge').textContent = '0';
     document.getElementById('chat-badge').classList.add('hidden');
     document.getElementById('chat-input').focus();
-    // Scroll to bottom when opening
     const box = document.getElementById('chat-msgs');
     requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
   }
@@ -195,19 +224,15 @@ document.getElementById('room-id-lbl').addEventListener('click', () => {
   });
 });
 
-// Send handshake to content script to confirm load (CSP check)
+// Send handshake to content script to confirm load
 window.parent.postMessage({ swOverlay: 'ready' }, '*');
 
 // ── Chat message helper ───────────────────────────────────────────
-// FIX v1.2: stable scroll — don't hijack when user is reading history,
-//           compensate scroll when trimming old messages from top.
 
 const MAX_CHAT_MSGS = 150;
 
 function addMsg(type, text, author) {
   const box = document.getElementById('chat-msgs');
-
-  // Snapshot scroll position BEFORE adding
   const isNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
 
   const div = document.createElement('div');
@@ -221,11 +246,10 @@ function addMsg(type, text, author) {
     a.textContent = esc(author || '?') + ':';
     div.appendChild(a);
 
-    // Detect if text is an image base64
     if (typeof text === 'string' && text.startsWith('data:image/')) {
       const img = document.createElement('img');
       img.src = text;
-      img.style.cssText = 'max-width: 100%; border-radius: 6px; margin-top: 4px; display: block; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.3);';
+      img.style.cssText = 'max-width:100%;border-radius:6px;margin-top:4px;display:block;border:1px solid rgba(255,255,255,0.1);box-shadow:0 4px 12px rgba(0,0,0,0.3);';
       div.appendChild(img);
     } else {
       const t = document.createElement('span');
@@ -236,22 +260,15 @@ function addMsg(type, text, author) {
 
   box.appendChild(div);
 
-  // Trim oldest messages, preserving scroll position for users reading history
   while (box.children.length > MAX_CHAT_MSGS) {
     const removed = box.firstChild;
     const removedH = removed.offsetHeight || 0;
     box.removeChild(removed);
-    if (!isNearBottom) {
-      box.scrollTop = Math.max(0, box.scrollTop - removedH);
-    }
+    if (!isNearBottom) box.scrollTop = Math.max(0, box.scrollTop - removedH);
   }
 
-  // Auto-scroll only if user was already at (or near) the bottom
   if (isNearBottom) {
     requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
-  } else if (!chatOpen) {
-    // Panel closed and unread — bump badge
-    // (badge already bumped for type=user in the caller; skip double bump)
   }
 }
 
