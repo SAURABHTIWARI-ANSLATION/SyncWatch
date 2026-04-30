@@ -542,8 +542,36 @@ chrome.runtime.onMessage.addListener((msg) => {
       }
       break;
 
+    // GRAPHIFY: rich chatMessage — forward full object to overlay for dedup + timestamps
+    case 'chatMessage':
+      // Always forward to overlay; controls.js handles own-message dedup via myUserId
+      postToOverlay({
+        type: 'chatMessage',
+        id: msg.id,
+        user: msg.user || null,
+        text: msg.text,
+        timestamp: msg.timestamp,
+        msgType: msg.type   // 'user' | 'system' (renamed to avoid collision with postMessage 'type')
+      });
+      break;
+
+    // GRAPHIFY: chat history replay — forward full list to overlay
+    case 'chatHistory':
+      postToOverlay({
+        type: 'chatHistory',
+        messages: (msg.messages || []).map(m => ({
+          id: m.id,
+          user: m.user || null,
+          text: m.text,
+          timestamp: m.timestamp,
+          type: m.type
+        }))
+      });
+      break;
+
     case 'user_joined':
       knownPeers.add(msg.userId);
+      postToOverlay({ type: 'usersList', memberCount: msg.memberCount, list: [] });
       postToOverlay({ type: 'user_joined', userId: msg.userId, memberCount: msg.memberCount });
       if (localStream) {
         console.log('[SW Content] New viewer during share, offering:', msg.userId);
@@ -553,6 +581,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'user_left':
       knownPeers.delete(msg.userId);
+      postToOverlay({ type: 'usersList', memberCount: msg.memberCount, list: [] });
       postToOverlay({ type: 'user_left', userId: msg.userId, memberCount: msg.memberCount });
       closePeer(msg.userId);
       break;

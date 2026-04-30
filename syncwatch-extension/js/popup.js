@@ -1,279 +1,331 @@
-// SyncWatch Popup — popup.js
 'use strict';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SyncWatch — Popup Controller
+// ─────────────────────────────────────────────────────────────────────────────
 
 const BACKEND = 'https://syncwatch-64jv.onrender.com';
 
-let currentTabId   = null;
-let currentTabUrl  = null;
-let currentRoomId  = null;
-let persistentUserId = localStorage.getItem('sw_userid') || (()=>{
-  const id = crypto.randomUUID();
-  localStorage.setItem('sw_userid', id);
+// ── Persistent user identity ──────────────────────────────────────────────────
+
+const persistentUserId = (() => {
+  let id = localStorage.getItem('sw_uid');
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem('sw_uid', id); }
   return id;
 })();
 
-// ── Init: get current tab info ────────────────────────────────────
-chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-  if (!tabs[0]) return;
-  const tab = tabs[0];
-  currentTabId  = tab.id;
-  currentTabUrl = tab.url || '';
+// ── Runtime state ─────────────────────────────────────────────────────────────
 
-  // Show current page info
-  document.getElementById('page-title').textContent = tab.title || tab.url || 'Unknown page';
-  const favicon = document.getElementById('page-favicon');
-  if (tab.favIconUrl) favicon.src = tab.favIconUrl;
+let currentTabId    = null;
+let currentRoomId   = null;
+let myDisplayName   = null;           // server-assigned (e.g. "Host", "Guest-ABCD")
+const seenMsgIds    = new Set();      // dedup chat messages
 
-  // Check if already in a room
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+
+const stripDisc   = $('strip-disconnected');
+const stripErr    = $('strip-error');
+const roomBanner  = $('room-banner');
+const bannerCode  = $('banner-code');
+const bannerCount = $('banner-count');
+const roomChat    = $('room-chat');
+const chatLog     = $('chat-log');
+const chatInput   = $('chat-input');
+const mainEl      = $('main');
+const formError   = $('form-error');
+const inviteBox   = $('invite-box');
+const inviteLink  = $('invite-link');
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+  if (!tab) return;
+  currentTabId = tab.id;
+
+  $('page-title').textContent = tab.title || tab.url || 'Unknown page';
+  if (tab.favIconUrl) $('page-icon').src = tab.favIconUrl;
+
+  // Restore UI if already in a room
   chrome.runtime.sendMessage({ action: 'getStatus', tabId: currentTabId }, resp => {
-    if (resp && resp.room && resp.connected) {
-      showRoomBanner(resp.room.roomId, resp.room.memberCount);
-      showChatTab();
+    if (resp?.room && resp.connected) {
+      myDisplayName = resp.room.userId || null;
+      enterRoomUI(resp.room.roomId, resp.room.memberCount);
     }
   });
 });
 
-let unreadCount = 0;
-let chatTabActive = false;
+// ── Background message handling ───────────────────────────────────────────────
 
-// Listen for updates from background while popup is open
 chrome.runtime.onMessage.addListener(msg => {
   if (!msg.sw) return;
+
   switch (msg.sw) {
+
     case 'joined':
-      if (msg.tabId === currentTabId) {
-        showRoomBanner(msg.roomId, msg.memberCount);
-        showChatTab();
-        setLoading(false, 'btn-create');
-        setLoading(false, 'btn-join');
-      }
+      myDisplayName = msg.userId || null;
+      hideDisconnected();
+      clearErr();
+      enterRoomUI(msg.roomId, msg.memberCount);
+      stopLoading('btn-create');
+      stopLoading('btn-join');
       break;
+
+    case 'left':
+      exitRoomUI();
+      hideDisconnected();
+      break;
+
+    case 'disconnected':
+      showDisconnected(msg.msg);
+      break;
+
+    case 'error':
+      showErr(friendlyError(msg.msg));
+      stopLoading('btn-create');
+      stopLoading('btn-join');
+      break;
+
+    case 'usersList':
+      if (currentRoomId) bannerCount.textContent = msg.memberCount || (msg.list?.length ?? 1);
+      break;
+
     case 'user_joined':
     case 'user_left':
-      if (msg.tabId === currentTabId && currentRoomId) {
-        document.getElementById('banner-members').textContent = msg.memberCount;
-      }
+      if (currentRoomId) bannerCount.textContent = msg.memberCount;
       break;
-    case 'chat':
-      if (msg.tabId === currentTabId) {
-        addChatMessage(msg.userId, msg.text);
-      }
+
+    case 'chatHistory':
+      (msg.messages || []).forEach(m => renderChatMsg(m.user, m.text, m.timestamp, m.id, m.type));
       break;
-    case 'error':
-      if (msg.tabId === currentTabId) {
-        showError(msg.msg);
-        setLoading(false, 'btn-create');
-        setLoading(false, 'btn-join');
+
+    case 'chatMessage':
+      // Skip echo of own messages — already shown optimistically
+      if (myDisplayName && msg.user === myDisplayName) {
+        seenMsgIds.add(msg.id);
+        break;
       }
+      renderChatMsg(msg.user, msg.text, msg.timestamp, msg.id, msg.type);
+      break;
+
+    case 'chat': // legacy fallback
+      renderChatMsg(msg.userId, msg.text);
       break;
   }
 });
 
-// ── Tab switching ─────────────────────────────────────────────────
+// ── Tab switching ─────────────────────────────────────────────────────────────
+
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    
-    tab.classList.add('active');
-    const panelId = 'panel-' + tab.dataset.tab;
-    const panel = document.getElementById(panelId);
-    if(panel) panel.classList.add('active');
-    
-    if (tab.dataset.tab === 'chat') {
-      chatTabActive = true;
-      unreadCount = 0;
-      updateChatBadge();
-      const box = document.getElementById('chat-msgs');
-      setTimeout(() => { box.scrollTop = box.scrollHeight; }, 10);
-    } else {
-      chatTabActive = false;
-    }
-    clearError();
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
+    tab.classList.add('on');
+    $('panel-' + tab.dataset.tab)?.classList.add('on');
+    clearFormErr();
   });
 });
 
-// ── Chat sending ──────────────────────────────────────────────────
-function sendChat() {
-  const inp = document.getElementById('chat-input');
-  const text = inp.value.trim();
-  if (!text) return;
+// ── Create Room ───────────────────────────────────────────────────────────────
 
-  chrome.runtime.sendMessage({ action: 'sendChat', tabId: currentTabId, text }, () => {
-    addChatMessage('You', text);
-    inp.value = '';
-  });
-}
-
-document.getElementById('btn-send-chat').addEventListener('click', sendChat);
-document.getElementById('chat-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') sendChat();
-});
-
-function addChatMessage(author, text) {
-  const box = document.getElementById('chat-msgs');
-  const div = document.createElement('div');
-  div.className = author === 'System' ? 'msg msg-sys' : 'msg';
-  
-  if (author !== 'System') {
-    const a = document.createElement('span');
-    a.className = 'msg-author';
-    a.textContent = author + ':';
-    div.appendChild(a);
-  }
-  
-  const t = document.createElement('span');
-  t.textContent = text;
-  div.appendChild(t);
-  
-  box.appendChild(div);
-  box.scrollTop = box.scrollHeight;
-
-  if (!chatTabActive && author !== 'You' && author !== 'System') {
-    unreadCount++;
-    updateChatBadge();
-  }
-}
-
-function updateChatBadge() {
-  const badge = document.getElementById('chat-badge');
-  if (unreadCount > 0) {
-    badge.textContent = unreadCount;
-    badge.style.display = 'inline-block';
-  } else {
-    badge.style.display = 'none';
-  }
-}
-
-function showChatTab() {
-  document.getElementById('tab-chat').classList.remove('hidden');
-}
-
-// ── Create Room ───────────────────────────────────────────────────
-document.getElementById('btn-create').addEventListener('click', () => {
-  clearError();
-  setLoading(true, 'btn-create', 'Creating...');
+$('btn-create').addEventListener('click', () => {
+  clearFormErr();
+  clearErr();
+  startLoading('btn-create', 'Creating…');
 
   chrome.runtime.sendMessage({ action: 'createRoom', tabId: currentTabId, userId: persistentUserId }, resp => {
-    if (resp.ok) {
+    if (resp?.ok) {
       currentRoomId = resp.roomId;
-      showInviteBox(resp.roomId);
-      showChatTab();
-      // Auto-trigger screen share prompt for the host if they stay in extension
+      showInvite(resp.roomId);
+      // Auto-share for host (best-effort)
       chrome.tabs.sendMessage(currentTabId, { action: 'autoStartShare' }).catch(() => {});
-      
-      // Banner will appear when 'joined' message arrives from background
+      // enterRoomUI fires when 'joined' arrives from background
     } else {
-      setLoading(false, 'btn-create');
-      showError(resp.error || 'Failed to create room. Is the server running?');
+      stopLoading('btn-create');
+      showFormErr(resp?.error || 'Failed to create room. Is the server running?');
     }
   });
 });
 
-// ── Join Room ─────────────────────────────────────────────────────
-document.getElementById('btn-join').addEventListener('click', () => {
-  const roomId = document.getElementById('inp-room-id').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (!roomId || roomId.length < 4) {
-    showError('Please enter a valid Room Code.');
-    return;
-  }
-  clearError();
-  setLoading(true, 'btn-join', 'Joining...');
+// ── Join Room ─────────────────────────────────────────────────────────────────
 
-  chrome.runtime.sendMessage({ action: 'joinRoom', tabId: currentTabId, roomId, userId: persistentUserId }, resp => {
-    if (resp.ok) {
+$('btn-join').addEventListener('click', () => {
+  const code = $('inp-code').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (code.length < 4) { showFormErr('Enter a valid room code.'); return; }
+
+  clearFormErr();
+  clearErr();
+  startLoading('btn-join', 'Joining…');
+
+  chrome.runtime.sendMessage({ action: 'joinRoom', tabId: currentTabId, roomId: code, userId: persistentUserId }, resp => {
+    if (resp?.ok) {
       currentRoomId = resp.roomId;
-      showChatTab();
-      // Banner will appear on 'joined' message
+      // enterRoomUI fires when 'joined' arrives
     } else {
-      setLoading(false, 'btn-join');
-      showError(resp.error || 'Could not join room.');
+      stopLoading('btn-join');
+      showFormErr(resp?.error || 'Could not join room.');
     }
   });
 });
 
-// ── Room ID input — auto uppercase ───────────────────────────────
-document.getElementById('inp-room-id').addEventListener('input', e => {
+$('inp-code').addEventListener('input', e => {
   e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 });
 
-// ── Leave room ────────────────────────────────────────────────────
-document.getElementById('btn-leave-room').addEventListener('click', () => {
+// ── Leave Room ────────────────────────────────────────────────────────────────
+
+$('btn-leave').addEventListener('click', () => {
   chrome.runtime.sendMessage({ action: 'leaveRoom', tabId: currentTabId }, () => {
-    hideRoomBanner();
-    document.getElementById('tab-chat').classList.add('hidden');
-    currentRoomId = null;
-    clearError();
+    exitRoomUI();
+    clearErr();
   });
 });
 
-// ── Copy invite (from banner) ─────────────────────────────────────
-document.getElementById('btn-copy-invite').addEventListener('click', () => {
+// ── Copy invite (banner code click) ───────────────────────────────────────────
+
+bannerCode.addEventListener('click', () => {
   if (!currentRoomId) return;
-  copyToClipboard(`${BACKEND}/join/${currentRoomId}`);
+  copy(`${BACKEND}/join/${currentRoomId}`);
+  const orig = bannerCode.textContent;
+  bannerCode.textContent = '✓ Copied!';
+  bannerCode.style.color = 'var(--green)';
+  setTimeout(() => { bannerCode.textContent = orig; bannerCode.style.color = ''; }, 1800);
 });
 
-// ── Invite box actions ────────────────────────────────────────────
-document.getElementById('btn-copy-link').addEventListener('click', () => {
+$('btn-copy-invite').addEventListener('click', () => {
   if (!currentRoomId) return;
-  copyToClipboard(`${BACKEND}/join/${currentRoomId}`);
-  document.getElementById('btn-copy-link').textContent = '✓ Copied!';
-  setTimeout(() => document.getElementById('btn-copy-link').textContent = '📋 Copy Link', 2000);
+  copy(`${BACKEND}/join/${currentRoomId}`);
+  const b = $('btn-copy-invite');
+  b.textContent = '✓ Copied!';
+  setTimeout(() => { b.textContent = '📋 Copy Invite'; }, 2000);
 });
 
-document.getElementById('btn-open-link').addEventListener('click', () => {
+$('btn-copy-link').addEventListener('click', () => {
+  if (!currentRoomId) return;
+  copy(`${BACKEND}/join/${currentRoomId}`);
+  const b = $('btn-copy-link');
+  b.textContent = '✓ Copied!';
+  setTimeout(() => { b.textContent = '📋 Copy Link'; }, 2000);
+});
+
+$('btn-open-link').addEventListener('click', () => {
   if (!currentRoomId) return;
   chrome.tabs.create({ url: `${BACKEND}/join/${currentRoomId}` });
 });
 
-// ── Helper functions ──────────────────────────────────────────────
+// ── Chat ──────────────────────────────────────────────────────────────────────
 
-function showRoomBanner(roomId, memberCount) {
-  currentRoomId = roomId;
-  document.getElementById('banner-room-id').textContent = roomId;
-  document.getElementById('banner-members').textContent = memberCount || 1;
-  document.getElementById('room-banner').classList.add('show');
-  document.getElementById('main-content').classList.add('hidden');
+function sendChat() {
+  const text = chatInput.value.trim();
+  if (!text || text.length > 500) return;
+
+  // Optimistic render
+  renderChatMsg(myDisplayName || 'You', text, Date.now(), `opt_${Date.now()}_${Math.random()}`);
+  chatInput.value = '';
+
+  chrome.runtime.sendMessage({ action: 'sendChat', tabId: currentTabId, text });
 }
 
-function hideRoomBanner() {
-  document.getElementById('room-banner').classList.remove('show');
-  document.getElementById('main-content').classList.remove('hidden');
-  document.getElementById('invite-box').classList.remove('show');
-  setLoading(false, 'btn-create');
-  setLoading(false, 'btn-join');
-}
+$('btn-chat-send').addEventListener('click', sendChat);
+chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 
-function showInviteBox(roomId) {
-  const link = `${BACKEND}/join/${roomId}`;
-  document.getElementById('invite-link-text').textContent = link;
-  document.getElementById('invite-box').classList.add('show');
-}
+function renderChatMsg(author, text, timestamp, msgId, type) {
+  if (msgId && seenMsgIds.has(msgId)) return;
+  if (msgId) seenMsgIds.add(msgId);
 
-function setLoading(loading, btnId, label) {
-  const btn = document.getElementById(btnId);
-  if (!btn) return;
-  if (loading) {
-    btn.disabled = true;
-    btn.innerHTML = `<span class="loader"></span>${label || 'Loading...'}`;
+  const isBot     = (type === 'system') || !author;
+  const nearBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 60;
+  const div        = document.createElement('div');
+
+  if (isBot) {
+    div.className   = 'cm sys';
+    div.textContent = text;
   } else {
-    btn.disabled = false;
-    btn.innerHTML = btnId === 'btn-create' ? 'Create Room' : 'Join Room';
+    div.className = 'cm';
+    const a = document.createElement('span');
+    a.className   = 'ca';
+    a.textContent = author + ':';
+    const t = document.createElement('span');
+    t.textContent = ' ' + text;
+    div.append(a, t);
+    if (timestamp) {
+      const ts = document.createElement('span');
+      ts.className   = 'ct';
+      ts.textContent = new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      div.append(ts);
+    }
   }
+
+  chatLog.appendChild(div);
+  if (nearBottom) requestAnimationFrame(() => { chatLog.scrollTop = chatLog.scrollHeight; });
 }
 
-function showError(msg) {
-  document.getElementById('error-msg').textContent = msg;
+// ── Room UI transitions ───────────────────────────────────────────────────────
+
+function enterRoomUI(roomId, memberCount) {
+  currentRoomId = roomId;
+  bannerCode.textContent  = roomId;
+  bannerCount.textContent = memberCount || 1;
+  roomBanner.classList.add('on');
+  roomChat.classList.add('on');
+  mainEl.classList.add('hidden');
 }
 
-function clearError() {
-  document.getElementById('error-msg').textContent = '';
+function exitRoomUI() {
+  roomBanner.classList.remove('on');
+  roomChat.classList.remove('on');
+  mainEl.classList.remove('hidden');
+  inviteBox.classList.remove('on');
+  // Reset chat
+  chatLog.innerHTML = '<div class="cm sys">Welcome to SyncWatch Chat 👋</div>';
+  seenMsgIds.clear();
+  myDisplayName = null;
+  currentRoomId = null;
+  stopLoading('btn-create');
+  stopLoading('btn-join');
 }
 
-function copyToClipboard(text) {
+function showInvite(roomId) {
+  const link = `${BACKEND}/join/${roomId}`;
+  inviteLink.textContent = link;
+  inviteBox.classList.add('on');
+}
+
+// ── Status strips ─────────────────────────────────────────────────────────────
+
+function showDisconnected(msg) {
+  stripDisc.textContent = '⚡ ' + (msg || 'Reconnecting…');
+  stripDisc.classList.add('on');
+}
+function hideDisconnected() { stripDisc.classList.remove('on'); }
+
+function showErr(msg)  { stripErr.textContent = msg; stripErr.classList.add('on'); }
+function clearErr()    { stripErr.textContent = ''; stripErr.classList.remove('on'); }
+function showFormErr(msg) { formError.textContent = msg; }
+function clearFormErr()   { formError.textContent = ''; }
+
+// ── Loading states ────────────────────────────────────────────────────────────
+
+function startLoading(id, label) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spin"></span>${label}`;
+}
+
+function stopLoading(id) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.disabled = false;
+  btn.innerHTML = id === 'btn-create' ? 'Create Room' : 'Join Room';
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function copy(text) {
   navigator.clipboard.writeText(text).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
     document.body.appendChild(ta);
     ta.select();
     document.execCommand('copy');
@@ -281,3 +333,10 @@ function copyToClipboard(text) {
   });
 }
 
+function friendlyError(code) {
+  return {
+    socket_error_rate_limit:       'Slow down — too many messages.',
+    socket_error_message_invalid:  'Message is empty or too long (max 500 chars).',
+    socket_error_not_in_room:      'Not currently in a room.'
+  }[code] || code || 'An error occurred.';
+}

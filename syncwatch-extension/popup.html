@@ -1,291 +1,330 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SyncWatch</title>
 <style>
+/* ── Reset & tokens ────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
 :root {
-  --bg: #05080f;
-  --surface: #0f172a;
-  --surface-light: #1e293b;
-  --accent: #7c9fff;
-  --text: #f8fafc;
-  --muted: #94a3b8;
-  --green: #4ade80;
-  --red: #f43f5e;
-  --radius: 10px;
+  --bg:        #05080f;
+  --surface:   #0f172a;
+  --surf2:     #1e293b;
+  --accent:    #7c9fff;
+  --green:     #4ade80;
+  --red:       #f43f5e;
+  --text:      #f8fafc;
+  --muted:     #94a3b8;
+  --r:         10px;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  width: 340px;
-  min-height: 420px;
+  width: 360px;
+  height: 520px;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 13px;
+  display: flex;
+  flex-direction: column;
 }
 
-/* Header */
-.header {
-  padding: 16px;
-  display: flex; align-items: center; gap: 10px;
+/* ── Header ────────────────────────────────────────────────────────── */
+.hdr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
   border-bottom: 1px solid rgba(255,255,255,0.05);
+  flex-shrink: 0;
 }
 .logo {
-  width: 34px; height: 34px;
-  background: var(--accent);
-  color: #000; font-weight: 900; font-size: 18px;
+  width: 30px; height: 30px;
+  background: var(--accent); color: #000;
+  font-size: 15px; font-weight: 900;
   display: flex; align-items: center; justify-content: center;
-  border-radius: 9px;
+  border-radius: 8px;
 }
-.brand { font-size: 17px; font-weight: 800; }
-.brand span { font-weight: 300; color: var(--muted); font-size: 14px; margin-left: 4px; }
-.version { font-size: 10px; color: var(--muted); margin-left: auto; }
+.brand { font-size: 15px; font-weight: 800; }
+.brand small { font-weight: 300; color: var(--muted); font-size: 11px; margin-left: 4px; }
+.ver { font-size: 10px; color: var(--muted); margin-left: auto; }
 
-/* Active room banner */
+/* ── Status strips (always visible) ───────────────────────────────── */
+#strip-disconnected, #strip-error {
+  font-size: 11px; font-weight: 600;
+  padding: 5px 14px; text-align: center;
+  flex-shrink: 0; display: none;
+}
+#strip-disconnected { background: rgba(244,63,94,0.1); border-bottom: 1px solid rgba(244,63,94,0.2); color: var(--red); }
+#strip-error        { background: rgba(251,191,36,0.08); border-bottom: 1px solid rgba(251,191,36,0.15); color: #fbbf24; }
+#strip-disconnected.on, #strip-error.on { display: block; }
+
+/* ── Room banner ───────────────────────────────────────────────────── */
 #room-banner {
-  background: rgba(124,159,255,0.08);
-  border: 1px solid rgba(124,159,255,0.15);
-  border-radius: var(--radius);
-  margin: 12px;
+  margin: 10px 12px 0;
   padding: 12px 14px;
+  background: rgba(124,159,255,0.07);
+  border: 1px solid rgba(124,159,255,0.15);
+  border-radius: var(--r);
+  flex-shrink: 0;
   display: none;
 }
-#room-banner.show { display: block; }
-.banner-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-.banner-room {
-  font-size: 22px; font-weight: 900; letter-spacing: 4px;
-  color: var(--accent); margin-bottom: 8px;
+#room-banner.on { display: block; }
+
+.bl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+#banner-code {
+  font-size: 22px; font-weight: 900; letter-spacing: 5px; color: var(--accent);
+  margin-bottom: 4px; cursor: pointer; user-select: all;
+  transition: opacity .15s;
 }
-.banner-meta { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
-.banner-meta span { color: var(--green); }
-.banner-actions { display: flex; gap: 6px; }
+#banner-code:hover { opacity: .75; }
+.bm { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+.bm b { color: var(--green); font-weight: 700; }
+.ba { display: flex; gap: 6px; }
 
-/* Main content */
-.content { padding: 12px; }
+/* ── In-room chat ──────────────────────────────────────────────────── */
+#room-chat {
+  flex: 1;
+  display: none;
+  flex-direction: column;
+  padding: 8px 12px 10px;
+  min-height: 0;
+}
+#room-chat.on { display: flex; }
 
-/* Tabs */
-.tabs {
-  display: flex; gap: 0;
+#chat-log {
+  flex: 1;
+  overflow-y: auto;
   background: var(--surface);
-  border-radius: var(--radius);
-  padding: 3px;
-  margin-bottom: 14px;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 5px;
+  border: 1px solid rgba(255,255,255,0.05);
+  min-height: 0;
+  scroll-behavior: smooth;
 }
-.tab {
-  flex: 1; padding: 8px;
-  text-align: center; cursor: pointer;
-  border-radius: 8px;
-  font-size: 12px; font-weight: 600;
-  color: var(--muted);
-  transition: all 0.2s;
-}
-.tab.active {
-  background: var(--surface-light);
-  color: var(--text);
-}
+#chat-log::-webkit-scrollbar { width: 3px; }
+#chat-log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
-/* Panels */
-.panel { display: none; }
-.panel.active { display: block; }
+.cm { font-size: 12px; line-height: 1.5; word-break: break-word; }
+.cm.sys { color: var(--muted); font-style: italic; font-size: 11px; text-align: center; padding: 2px 0; }
+.cm .ca { color: var(--accent); font-weight: 800; margin-right: 3px; }
+.cm .ct { font-size: 9px; color: var(--muted); margin-left: 4px; }
 
-/* Info text */
-.info-text {
-  font-size: 12px; color: var(--muted);
-  line-height: 1.5; margin-bottom: 14px;
+#chat-bar {
+  display: flex; gap: 6px;
+  padding: 7px 9px;
+  background: var(--surf2);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  flex-shrink: 0;
 }
+#chat-bar input {
+  flex: 1; background: transparent; border: none;
+  color: var(--text); font-size: 13px; outline: none;
+  font-family: inherit;
+}
+#chat-bar input::placeholder { color: var(--muted); }
+#chat-bar button {
+  background: var(--accent); border: none; border-radius: 6px;
+  padding: 4px 11px; color: #000; font-weight: 700; font-size: 13px;
+  cursor: pointer; transition: opacity .15s;
+}
+#chat-bar button:hover { opacity: .85; }
 
-/* Current page */
-.curr-page {
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  margin-bottom: 12px;
+/* ── Main content (create / join) ──────────────────────────────────── */
+#main {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+}
+#main.hidden { display: none; }
+
+.content { padding: 10px 12px; flex-shrink: 0; }
+
+/* Current page pill */
+.page-pill {
   display: flex; align-items: center; gap: 8px;
+  background: var(--surface);
+  border-radius: var(--r);
+  padding: 8px 11px; margin-bottom: 10px;
 }
-.curr-page .favicon { width: 16px; height: 16px; border-radius: 3px; }
-.curr-page .title {
+.page-pill img { width: 15px; height: 15px; border-radius: 3px; }
+.page-pill span {
   font-size: 11px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   max-width: 220px;
 }
 
-/* Input */
-.field { margin-bottom: 12px; }
+/* Tabs */
+.tabs {
+  display: flex; background: var(--surface);
+  border-radius: var(--r); padding: 3px; margin-bottom: 10px;
+}
+.tab {
+  flex: 1; text-align: center; padding: 7px;
+  border-radius: 8px; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  transition: all .15s; user-select: none;
+}
+.tab.on { background: var(--surf2); color: var(--text); }
+
+.panel { display: none; }
+.panel.on { display: block; }
+
+.info { font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+
+/* Field */
+.field { margin-bottom: 11px; }
 .field label { display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
 .field input {
-  width: 100%;
-  background: var(--surface);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px;
-  padding: 10px 12px;
-  color: var(--text);
-  font-size: 14px; font-weight: 700;
-  text-align: center; letter-spacing: 3px;
-  text-transform: uppercase;
-  outline: none;
-  font-family: inherit;
+  width: 100%; background: var(--surface);
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+  padding: 10px 12px; color: var(--text);
+  font-size: 15px; font-weight: 700; text-align: center;
+  letter-spacing: 3px; text-transform: uppercase;
+  outline: none; font-family: inherit;
+  transition: border-color .15s;
 }
 .field input:focus { border-color: var(--accent); }
-.field input::placeholder { font-weight: 400; letter-spacing: 0; color: var(--muted); font-size: 12px; }
+.field input::placeholder { font-weight: 400; letter-spacing: 0; font-size: 12px; color: var(--muted); }
 
 /* Buttons */
 .btn {
   width: 100%; padding: 11px;
-  border: none; border-radius: 9px;
-  font-size: 13px; font-weight: 700;
-  cursor: pointer; transition: all 0.2s;
-  font-family: inherit;
+  border: none; border-radius: var(--r);
+  font-size: 13px; font-weight: 700; cursor: pointer;
+  transition: all .18s; font-family: inherit;
 }
 .btn:hover { transform: translateY(-1px); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-.btn-primary { background: var(--accent); color: #000; }
-.btn-surface { background: var(--surface); color: var(--text); border: 1px solid rgba(255,255,255,0.08); }
-.btn-red { background: rgba(244,63,94,0.12); color: var(--red); border: 1px solid rgba(244,63,94,0.2); }
-.btn-sm {
-  padding: 7px 12px; font-size: 11px;
-  border-radius: 7px; border: none;
-  cursor: pointer; font-family: inherit; font-weight: 700;
-}
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn-p { background: var(--accent); color: #000; }
+.btn-s { background: var(--surface); color: var(--text); border: 1px solid rgba(255,255,255,0.08); }
+.btn-r { background: rgba(244,63,94,0.12); color: var(--red); border: 1px solid rgba(244,63,94,0.2); }
 
-/* Error */
-#error-msg {
-  color: var(--red); font-size: 11px;
-  text-align: center; margin-top: 8px;
-  min-height: 16px;
+/* Small buttons */
+.sbtn {
+  padding: 7px 12px; font-size: 11px; border-radius: 7px;
+  border: none; cursor: pointer; font-family: inherit; font-weight: 700;
+  transition: all .15s;
 }
+.sbtn:hover { transform: translateY(-1px); }
+.sbtn-p { background: var(--accent); color: #000; }
+.sbtn-s { background: var(--surf2); color: var(--text); }
+.sbtn-r { background: rgba(244,63,94,0.12); color: var(--red); }
 
-/* Invite section (after create) */
-#invite-box {
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 12px;
-  margin-top: 12px;
-  display: none;
-}
-#invite-box.show { display: block; }
-.invite-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-.invite-link {
-  font-size: 11px; color: var(--accent);
-  word-break: break-all; margin-bottom: 8px;
-  cursor: pointer;
-}
-.invite-link:hover { text-decoration: underline; }
-.invite-actions { display: flex; gap: 6px; }
+/* Invite box */
+#invite-box { display: none; background: var(--surface); border-radius: var(--r); padding: 11px; margin-top: 11px; }
+#invite-box.on { display: block; }
+.il { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
+.ilink { font-size: 11px; color: var(--accent); word-break: break-all; margin-bottom: 7px; cursor: pointer; }
+.ilink:hover { text-decoration: underline; }
+.ia { display: flex; gap: 6px; }
 
-/* Loader */
-.loader {
-  width: 16px; height: 16px;
-  border: 2px solid rgba(255,255,255,0.2);
-  border-top-color: #000;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  display: inline-block; vertical-align: middle;
-  margin-right: 6px;
+/* Loader spinner */
+.spin {
+  width: 13px; height: 13px;
+  border: 2px solid rgba(255,255,255,0.2); border-top-color: #000;
+  border-radius: 50%; animation: spin .7s linear infinite;
+  display: inline-block; vertical-align: middle; margin-right: 6px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Footer */
-.footer {
-  padding: 10px 16px;
-  border-top: 1px solid rgba(255,255,255,0.04);
-  font-size: 10px; color: var(--muted);
-  text-align: center;
-}
-.footer a { color: var(--accent); text-decoration: none; }
+/* Local form error */
+#form-error { color: var(--red); font-size: 11px; text-align: center; margin-top: 8px; min-height: 16px; }
 
-.hidden { display: none !important; }
+/* Footer */
+.ftr {
+  padding: 8px 14px; border-top: 1px solid rgba(255,255,255,0.04);
+  font-size: 10px; color: var(--muted); text-align: center; flex-shrink: 0;
+}
+.ftr a { color: var(--accent); text-decoration: none; }
 </style>
 </head>
 <body>
 
 <!-- Header -->
-<div class="header">
+<div class="hdr">
   <div class="logo">▶</div>
-  <div class="brand">SyncWatch <span>Live</span></div>
-  <div class="version">v1.0</div>
+  <div class="brand">SyncWatch <small>Live</small></div>
+  <div class="ver">v1.1</div>
 </div>
 
-<!-- Active room banner (shown when in a room) -->
+<!-- Always-visible status strips -->
+<div id="strip-disconnected">⚡ Connection lost — reconnecting…</div>
+<div id="strip-error"></div>
+
+<!-- Room banner (in-room) -->
 <div id="room-banner">
-  <div class="banner-label">Active Room</div>
-  <div class="banner-room" id="banner-room-id">--------</div>
-  <div class="banner-meta"><span id="banner-members">1</span> watching now</div>
-  <div class="banner-actions">
-    <button class="btn-sm btn-surface" id="btn-copy-invite" style="flex:1">📋 Copy Invite</button>
-    <button class="btn-sm btn-red"     id="btn-leave-room"  style="flex:1">✕ Leave Room</button>
+  <div class="bl">Active Room</div>
+  <div id="banner-code" title="Click to copy invite link">--------</div>
+  <div class="bm"><b id="banner-count">1</b> watching now</div>
+  <div class="ba">
+    <button class="sbtn sbtn-s" id="btn-copy-invite" style="flex:1">📋 Copy Invite</button>
+    <button class="sbtn sbtn-r" id="btn-leave"       style="flex:1">✕ Leave Room</button>
   </div>
 </div>
 
-<!-- Main content (create/join tabs) -->
-<div class="content" id="main-content">
-
-  <!-- Current page info -->
-  <div class="curr-page" id="curr-page">
-    <img id="page-favicon" class="favicon" src="" onerror="this.style.display='none'">
-    <div class="title" id="page-title">Loading...</div>
+<!-- In-room chat (always visible while in room) -->
+<div id="room-chat">
+  <div id="chat-log">
+    <div class="cm sys">Welcome to SyncWatch Chat 👋</div>
   </div>
-
-  <!-- Tabs -->
-  <div class="tabs">
-    <div class="tab active" data-tab="create">🎬 Create</div>
-    <div class="tab" data-tab="join">🔗 Join</div>
-    <div class="tab hidden" id="tab-chat" data-tab="chat">💬 Chat <span id="chat-badge" style="display:none;background:var(--red);color:#fff;font-size:8px;padding:1px 4px;border-radius:10px;">0</span></div>
+  <div id="chat-bar">
+    <input id="chat-input" type="text" placeholder="Message…" maxlength="500" autocomplete="off">
+    <button id="btn-chat-send">→</button>
   </div>
+</div>
 
-  <!-- Create Panel -->
-  <div class="panel active" id="panel-create">
-    <p class="info-text">Start a new sync room and invite friends to watch with you in real-time.</p>
-    <button class="btn btn-primary" id="btn-create">Create Room</button>
+<!-- Main (create / join) — hidden while in a room -->
+<div id="main">
+  <div class="content">
+    <!-- Current page -->
+    <div class="page-pill">
+      <img id="page-icon" src="" alt="" onerror="this.style.display='none'">
+      <span id="page-title">Loading…</span>
+    </div>
 
-    <!-- Invite box (appears after create) -->
-    <div id="invite-box">
-      <div class="invite-label">Invite your friends</div>
-      <div class="invite-link" id="invite-link-text">—</div>
-      <div class="invite-actions">
-        <button class="btn-sm btn-primary" id="btn-copy-link" style="flex:1">📋 Copy Link</button>
-        <button class="btn-sm btn-surface" id="btn-open-link" style="flex:1">🌐 Open Page</button>
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab on" data-tab="create">🎬 Create</div>
+      <div class="tab"    data-tab="join">🔗 Join</div>
+    </div>
+
+    <!-- Create panel -->
+    <div class="panel on" id="panel-create">
+      <p class="info">Start a new sync room and share the code with friends.</p>
+      <button class="btn btn-p" id="btn-create">Create Room</button>
+      <!-- Invite box shown immediately after room creation -->
+      <div id="invite-box">
+        <div class="il">Invite your friends</div>
+        <div class="ilink" id="invite-link">—</div>
+        <div class="ia">
+          <button class="sbtn sbtn-p" id="btn-copy-link" style="flex:1">📋 Copy Link</button>
+          <button class="sbtn sbtn-s" id="btn-open-link" style="flex:1">🌐 Open Page</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- Join Panel -->
-  <div class="panel" id="panel-join">
-    <p class="info-text">Enter the room code shared by your friend to watch together.</p>
-    <div class="field">
-      <label>Room Code</label>
-      <input type="text" id="inp-room-id" placeholder="e.g. AB12CD34" maxlength="8">
+    <!-- Join panel -->
+    <div class="panel" id="panel-join">
+      <p class="info">Enter the room code your friend shared with you.</p>
+      <div class="field">
+        <label>Room Code</label>
+        <input id="inp-code" type="text" placeholder="e.g. AB12CD34" maxlength="8">
+      </div>
+      <button class="btn btn-p" id="btn-join">Join Room</button>
     </div>
-    <button class="btn btn-primary" id="btn-join">Join Room</button>
-  </div>
 
-  <!-- Chat Panel -->
-  <style>
-    #panel-chat { flex-direction: column; height: 320px; }
-    #chat-msgs { flex: 1; overflow-y: auto; background: var(--surface); border-radius: 8px 8px 0 0; padding: 10px; display: flex; flex-direction: column; gap: 8px; border: 1px solid rgba(255,255,255,0.05); }
-    .msg { font-size: 12px; line-height: 1.4; word-break: break-all; }
-    .msg-sys { color: var(--muted); font-style: italic; font-size: 11px; text-align: center; }
-    .msg-author { color: var(--accent); font-weight: 800; margin-right: 4px; }
-    .chat-row { display: flex; gap: 6px; padding: 8px; background: var(--surface-light); border-radius: 0 0 8px 8px; border: 1px solid rgba(255,255,255,0.05); border-top: none; }
-    .chat-row input { flex: 1; background: transparent; border: none; color: var(--text); outline: none; font-size: 13px; }
-    .chat-row button { background: var(--accent); color: #000; border: none; border-radius: 6px; padding: 4px 10px; font-weight: 700; cursor: pointer; }
-  </style>
-  <div class="panel" id="panel-chat">
-    <div id="chat-msgs">
-      <div class="msg-sys">Welcome to SyncWatch Chat!</div>
-    </div>
-    <div class="chat-row">
-      <input type="text" id="chat-input" placeholder="Type a message..." maxlength="300">
-      <button id="btn-send-chat">→</button>
-    </div>
+    <div id="form-error"></div>
   </div>
-
-  <div id="error-msg"></div>
 </div>
 
 <!-- Footer -->
-<div class="footer">
-  Backend: <a href="https://syncwatch-64jv.onrender.com" target="_blank">syncwatch-64jv.onrender.com</a>
+<div class="ftr">
+  Server: <a href="https://syncwatch-64jv.onrender.com" target="_blank">syncwatch-64jv.onrender.com</a>
 </div>
 
 <script src="js/popup.js"></script>

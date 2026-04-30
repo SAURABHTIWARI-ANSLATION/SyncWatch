@@ -1,0 +1,1511 @@
+# GRAPHIFY.md - SyncWatch Extension Architecture & Backend Blueprint
+
+> **Purpose**: Complete system documentation for building the SyncWatch backend server that syncs video playback across multiple users in real-time.
+
+---
+
+## 📋 TABLE OF CONTENTS
+
+1. [System Overview](#system-overview)
+2. [Architecture Diagram](#architecture-diagram)
+3. [Data Flow](#data-flow)
+4. [Backend Requirements](#backend-requirements)
+5. [API Specification](#api-specification)
+6. [Database Schema](#database-schema)
+7. [Event System](#event-system)
+8. [Chat Feature](#chat-feature) ← **NEW**
+9. [Security & Validation](#security--validation)
+10. [Deployment Guide](#deployment-guide)
+11. [Testing Strategy](#testing-strategy)
+
+---
+
+## 🎯 SYSTEM OVERVIEW
+
+### What is SyncWatch?
+
+**SyncWatch** is a browser extension that synchronizes video playback across multiple users in real-time. When one user plays, pauses, seeks, or changes playback speed, all other users in the same "room" see the exact same video state instantly.
+
+### Key Features
+
+- ✅ Real-time video synchronization (play/pause/seek/speed)
+- ✅ Multi-user rooms with unique names
+- ✅ Video URL sharing between users
+- ✅ **Real-time group chat within rooms** ← **NEW**
+- ✅ **Chat history (last 100 messages per room)** ← **NEW**
+- ✅ **System messages for join/leave events** ← **NEW**
+- ✅ Netflix special support (via page script injection)
+- ✅ Cross-browser support (Chrome, Firefox, Edge)
+- ✅ Persistent WebSocket connections
+- ✅ Auto-reconnect on network failure
+- ✅ AFK (away-from-keyboard) detection
+
+### Technology Stack
+
+**Frontend (Extension)**:
+- Manifest V3 (Chrome Extension)
+- Vanilla JavaScript (no frameworks)
+- Socket.IO Client (v4.7.5)
+- HTML5 Video API
+
+**Backend (Server)**:
+- Node.js (v14+)
+- Express.js (web server)
+- Socket.IO (v4.7.5) (WebSocket)
+- In-memory storage (or optional Redis/MongoDB)
+
+---
+
+## 🏗️ ARCHITECTURE DIAGRAM
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          SYNCWATCH SYSTEM ARCHITECTURE                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────┐         ┌──────────────────┐         ┌──────────────────┐
+│   USER A         │         │   USER B         │         │   USER C         │
+│   (Browser)      │         │   (Browser)      │         │   (Browser)      │
+└────────┬─────────┘         └────────┬─────────┘         └────────┬─────────┘
+         │                            │                            │
+         │ WebSocket                  │ WebSocket                  │ WebSocket
+         │ (Socket.IO)                │ (Socket.IO)                │ (Socket.IO)
+         │                            │                            │
+         └────────────────────────────┼────────────────────────────┘
+                                      │
+                                      ▼
+                          ┌───────────────────────┐
+                          │   SYNCWATCH SERVER    │
+                          │   (Node.js + Express) │
+                          │                       │
+                          │  ┌─────────────────┐  │
+                          │  │  Socket.IO      │  │
+                          │  │  Event Handler  │  │
+                          │  └─────────────────┘  │
+                          │                       │
+                          │  ┌─────────────────┐  │
+                          │  │  Room Manager   │  │
+                          │  │  (In-Memory)    │  │
+                          │  └─────────────────┘  │
+                          │                       │
+                          │  ┌─────────────────┐  │
+                          │  │  User Registry  │  │
+                          │  └─────────────────┘  │
+                          │                       │
+                          │  ┌─────────────────┐  │
+                          │  │  Sync Engine    │  │
+                          │  │  (Broadcast)    │  │
+                          │  └─────────────────┘  │
+                          │                       │
+                          │  ┌─────────────────┐  │ ← NEW
+                          │  │  Chat Engine    │  │
+                          │  │  (Messages)     │  │
+                          │  └─────────────────┘  │
+                          └───────────────────────┘
+                                      │
+                                      ▼
+                          ┌───────────────────────┐
+                          │   Optional: Database  │
+                          │   (MongoDB / Redis)   │
+                          │   - Room Persistence  │
+                          │   - Chat History      │ ← NEW
+                          │   - Analytics/Logs    │
+                          └───────────────────────┘
+```
+
+---
+
+## 📊 DATA FLOW
+
+### 1. CONNECTION FLOW
+
+```
+User Opens Extension → Enters Name & Room → Clicks "Connect"
+         │
+         ▼
+Extension background.js creates Socket.IO connection
+         │
+         ▼
+Socket connects to wss://server.syncwatch.space/
+         │
+         ▼
+Server accepts connection → Assigns socket ID
+         │
+         ▼
+Extension emits 'join' event with { name, room }
+         │
+         ▼
+Server validates → Adds user to room → Broadcasts usersList
+         │
+         ▼
+Server sends recent chat history to new user (last 100 msgs)  ← NEW
+         │
+         ▼
+All users in room receive updated usersList
+         │
+         ▼
+Extension popup shows: "✓ Connected | Room: movie-night | Users: 3"
+```
+
+### 2. VIDEO SYNC FLOW
+
+```
+User A plays video at 02:35 (Netflix/YouTube/Any site)
+         │
+         ▼
+content.js detects 'playing' event on <video> element
+         │
+         ▼
+Sends message to background.js:
+{
+  from: 'content',
+  data: {
+    location: '-1',           // frame path
+    type: 'play',
+    element: 0,               // video index on page
+    currentTime: 155.4,       // seconds
+    playbackRate: 1.0
+  }
+}
+         │
+         ▼
+background.js forwards to Socket.IO:
+socket.send(data)
+         │
+         ▼
+Server receives 'message' event
+         │
+         ▼
+Server validates event.type ∈ ['play', 'pause', 'seeked', 'ratechange']
+         │
+         ▼
+Server broadcasts to ALL other users in room:
+socket.to(roomName).emit('message', event)
+         │
+         ▼
+User B & C receive event via Socket.IO
+         │
+         ▼
+background.js → content.js (via chrome.tabs.sendMessage)
+         │
+         ▼
+content.js applies sync:
+video.currentTime = 155.4
+video.playbackRate = 1.0
+video.play()
+         │
+         ▼
+✅ All users see exact same video moment!
+```
+
+### 3. VIDEO SHARING FLOW
+
+```
+User A clicks "Share video" on Netflix page
+         │
+         ▼
+popup.js sends: { from: 'popupShare' }
+         │
+         ▼
+background.js queries active tab:
+chrome.tabs.query({ active: true })
+         │
+         ▼
+Gets tab: { title: "Stranger Things S5E1", url: "netflix.com/watch/..." }
+         │
+         ▼
+Emits to server:
+socket.emit('share', {
+  title: "Stranger Things S5E1",
+  url: "https://www.netflix.com/watch/123456",
+  user: "Alice"
+})
+         │
+         ▼
+Server receives 'share' event
+         │
+         ▼
+Server stores in room.sharedVideo
+         │
+         ▼
+Server broadcasts to ALL users in room:
+io.to(roomName).emit('share', videoData)
+         │
+         ▼
+All users receive notification:
+"Alice shared a video: Stranger Things S5E1"
+         │
+         ▼
+User clicks "Open video" → Opens URL in new tab
+         │
+         ▼
+✅ All users watching same video!
+```
+
+### 4. CHAT MESSAGE FLOW ← **NEW**
+
+```
+User A types a message and presses Enter
+         │
+         ▼
+popup.js emits 'chatMessage':
+socket.emit('chatMessage', {
+  text: "Ready? Let's start at 00:00!",
+  user: "Alice"
+})
+         │
+         ▼
+Server receives 'chatMessage' event
+         │
+         ▼
+Server validates message (length, sanitization)
+         │
+         ▼
+Server builds message object:
+{
+  id: "msg_1714478401_abc",
+  user: "Alice",
+  text: "Ready? Let's start at 00:00!",
+  timestamp: 1714478401000,
+  type: "user"
+}
+         │
+         ▼
+Server appends to room.chatHistory (max 100 messages)
+         │
+         ▼
+Server broadcasts to ALL users in room:
+io.to(roomName).emit('chatMessage', messageObj)
+         │
+         ▼
+All users see the message in the chat panel
+         │
+         ▼
+✅ Real-time group chat!
+```
+
+---
+
+## 🛠️ BACKEND REQUIREMENTS
+
+### Core Features Required
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| **Socket.IO Server** | CRITICAL | WebSocket server for real-time communication |
+| **Room Management** | CRITICAL | Create/join/leave rooms, track users |
+| **Event Broadcasting** | CRITICAL | Forward video events to all room members |
+| **Chat Messaging** | CRITICAL | Real-time text chat within rooms ← **NEW** |
+| **User Validation** | HIGH | Validate name/room length, prevent injection |
+| **Connection Handling** | HIGH | Auto-reconnect, heartbeat, timeout |
+| **Chat History** | HIGH | Store last 100 messages per room ← **NEW** |
+| **System Messages** | MEDIUM | Join/leave/share notifications in chat ← **NEW** |
+| **AFK Detection** | MEDIUM | Disconnect idle users to save bandwidth |
+| **Video Sharing** | MEDIUM | Store & broadcast shared video URLs |
+| **Health Check** | MEDIUM | `/health` endpoint for monitoring |
+| **CORS Support** | HIGH | Allow extension to connect from browser |
+| **Rate Limiting** | MEDIUM | Prevent abuse/spam |
+| **Error Logging** | MEDIUM | Winston/Bunyan for production logs |
+
+### Optional Features
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| **Persistent Chat** | LOW | Save chat history to database (MongoDB/Redis) |
+| **Emoji Reactions** | LOW | React to messages with emojis |
+| **Persistent Rooms** | LOW | Save rooms to database (MongoDB/Redis) |
+| **Admin Dashboard** | LOW | Web UI to monitor rooms/users |
+| **Analytics** | LOW | Track usage stats |
+| **Authentication** | LOW | JWT tokens for private rooms |
+
+---
+
+## 🔌 API SPECIFICATION
+
+### Socket.IO Events
+
+#### CLIENT → SERVER
+
+##### 1. `join` - Join a room
+```javascript
+socket.emit('join', {
+  name: string,  // 2-24 characters
+  room: string   // 2-24 characters
+});
+```
+**Server Response**:
+- Emits `usersList` to all users in room
+- Emits `chatHistory` to joining user (last 100 messages) ← **NEW**
+- Emits system `chatMessage` to room: "Alice joined the room" ← **NEW**
+- On error: emits `error` with key (e.g., 'socket_error_name_length')
+
+##### 2. `message` - Send video sync event
+```javascript
+socket.send({
+  location: string,      // frame path (e.g., '-1' for main frame)
+  type: string,          // 'play' | 'pause' | 'seeked' | 'ratechange'
+  element: number,       // video element index
+  currentTime: number,   // seconds (float)
+  playbackRate: number   // speed (1.0 = normal)
+});
+```
+**Server Response**:
+- Broadcasts same event to all OTHER users in room
+
+##### 3. `share` - Share video URL
+```javascript
+socket.emit('share', {
+  title: string,  // video title
+  url: string,    // full URL
+  user: string    // sender's name
+});
+```
+**Server Response**:
+- Broadcasts to ALL users in room (including sender)
+- Posts system chat message: "Alice shared a video: Stranger Things S5E1" ← **NEW**
+
+##### 4. `chatMessage` - Send a chat message ← **NEW**
+```javascript
+socket.emit('chatMessage', {
+  text: string   // 1-500 characters
+});
+```
+**Server Response**:
+- Broadcasts full message object to ALL users in room
+- Appends to room chat history
+
+##### 5. `disconnect` - User leaves
+```javascript
+// Automatic on socket disconnect
+socket.disconnect();
+```
+**Server Response**:
+- Removes user from room
+- Broadcasts updated `usersList`
+- Posts system chat message: "Alice left the room" ← **NEW**
+
+#### SERVER → CLIENT
+
+##### 1. `usersList` - Updated list of room members
+```javascript
+socket.on('usersList', (data) => {
+  console.log(data.list);
+  // [ { name: 'Alice' }, { name: 'Bob' }, ... ]
+});
+```
+
+##### 2. `message` - Video sync event from another user
+```javascript
+socket.on('message', (event) => {
+  console.log(event);
+  // { type: 'play', currentTime: 120.5, playbackRate: 1.0, ... }
+});
+```
+
+##### 3. `share` - Another user shared a video
+```javascript
+socket.on('share', (data) => {
+  console.log(data);
+  // { title: '...', url: '...', user: 'Alice' }
+});
+```
+
+##### 4. `chatMessage` - Incoming chat message ← **NEW**
+```javascript
+socket.on('chatMessage', (data) => {
+  console.log(data);
+  /*
+  {
+    id: "msg_1714478401_abc",
+    user: "Alice",          // null if type === 'system'
+    text: "Ready? Let's start!",
+    timestamp: 1714478401000,
+    type: "user" | "system"
+  }
+  */
+});
+```
+
+##### 5. `chatHistory` - Recent messages on join ← **NEW**
+```javascript
+socket.on('chatHistory', (data) => {
+  console.log(data.messages);
+  /*
+  [
+    { id: "...", user: "Alice", text: "Hey!", timestamp: ..., type: "user" },
+    { id: "...", user: null,    text: "Bob joined the room", timestamp: ..., type: "system" },
+    ...
+  ]
+  */
+});
+```
+
+##### 6. `error` - Validation or server error
+```javascript
+socket.on('error', (errorKey) => {
+  console.log(errorKey);
+  // e.g., 'socket_error_name_length' | 'socket_error_message_too_long'
+});
+```
+
+##### 7. `afk` - User kicked for inactivity
+```javascript
+socket.on('afk', () => {
+  // Server is disconnecting you
+});
+```
+
+##### 8. `connect` / `disconnect` / `reconnect` - Connection status
+```javascript
+socket.on('connect', () => console.log('Connected'));
+socket.on('disconnect', () => console.log('Disconnected'));
+socket.on('reconnect', () => console.log('Reconnected'));
+```
+
+### HTTP REST Endpoints (Optional)
+
+#### 1. `GET /health` - Health check
+```
+Response: 200 OK
+{
+  "status": "online",
+  "activeRooms": 12,
+  "totalUsers": 47,
+  "uptime": 3600,
+  "timestamp": "2026-04-30T12:00:00Z"
+}
+```
+
+#### 2. `GET /stats` - Room statistics
+```
+Response: 200 OK
+{
+  "rooms": [
+    {
+      "name": "movie-night",
+      "users": ["Alice", "Bob", "Charlie"],
+      "userCount": 3,
+      "sharedVideo": {
+        "title": "Inception",
+        "sharedBy": "Alice"
+      },
+      "chatMessageCount": 42,
+      "createdAt": "2026-04-30T11:30:00Z"
+    }
+  ]
+}
+```
+
+#### 3. `GET /room/:roomName/chat` - Fetch chat history ← **NEW**
+```
+Response: 200 OK
+{
+  "room": "movie-night",
+  "messages": [
+    {
+      "id": "msg_1714478401_abc",
+      "user": "Alice",
+      "text": "Ready? Let's start at 00:00!",
+      "timestamp": 1714478401000,
+      "type": "user"
+    }
+  ],
+  "total": 42
+}
+```
+
+---
+
+## 💾 DATABASE SCHEMA
+
+### In-Memory Storage (Default)
+
+```javascript
+// rooms object structure
+{
+  "movie-night": {
+    users: [
+      { name: "Alice", socketId: "abc123" },
+      { name: "Bob", socketId: "def456" }
+    ],
+    sharedVideo: {
+      title: "Inception",
+      url: "https://netflix.com/watch/70131314",
+      user: "Alice",
+      sharedAt: 1714478400000
+    },
+    // ── CHAT ────────────────────────────────── NEW
+    chatHistory: [
+      {
+        id: "msg_1714478401_abc",
+        user: "Alice",
+        text: "Hey everyone, ready to watch?",
+        timestamp: 1714478401000,
+        type: "user"          // "user" | "system"
+      },
+      {
+        id: "msg_1714478402_xyz",
+        user: null,
+        text: "Bob joined the room",
+        timestamp: 1714478402000,
+        type: "system"
+      }
+    ],                        // Max 100 messages, FIFO eviction
+    // ────────────────────────────────────────────
+    createdAt: 1714478000000,
+    lastActivity: 1714478400000,
+    afkTimer: null  // setTimeout reference
+  }
+}
+```
+
+### Optional: MongoDB Schema
+
+```javascript
+// Room Model
+{
+  _id: ObjectId,
+  name: String,           // unique room name
+  users: [
+    {
+      name: String,
+      socketId: String,
+      joinedAt: Date
+    }
+  ],
+  sharedVideo: {
+    title: String,
+    url: String,
+    sharedBy: String,
+    sharedAt: Date
+  },
+  // ── CHAT ──────────────────────────────────── NEW
+  chatHistory: [
+    {
+      id: String,
+      user: String,         // null for system messages
+      text: String,
+      timestamp: Date,
+      type: { type: String, enum: ['user', 'system'], default: 'user' }
+    }
+  ],
+  // ──────────────────────────────────────────────
+  createdAt: Date,
+  lastActivity: Date,
+  isActive: Boolean       // false if all users left
+}
+
+// Analytics Model (optional)
+{
+  _id: ObjectId,
+  eventType: String,      // 'join', 'leave', 'share', 'sync', 'chat'
+  roomName: String,
+  userName: String,
+  timestamp: Date,
+  metadata: Mixed
+}
+```
+
+### Optional: Redis Schema
+
+```redis
+# Room data (hash)
+HSET room:movie-night users "Alice,Bob,Charlie"
+HSET room:movie-night sharedVideo '{"title":"...","url":"..."}'
+HSET room:movie-night createdAt "1714478000000"
+
+# Chat history (list — FIFO, capped at 100)       ← NEW
+RPUSH room:movie-night:chat '{"id":"...","user":"Alice","text":"Hey!","timestamp":...,"type":"user"}'
+LTRIM room:movie-night:chat -100 -1               # keep last 100 only
+
+# Active rooms (set)
+SADD active-rooms "movie-night" "friends-room" "study-group"
+
+# User → Room mapping
+HSET user-rooms "Alice" "movie-night"
+
+# Expiry (auto-cleanup after 1 hour of inactivity)
+EXPIRE room:movie-night 3600
+EXPIRE room:movie-night:chat 3600                 # ← NEW
+```
+
+---
+
+## 🎛️ EVENT SYSTEM
+
+### Event Types & Handling
+
+```javascript
+// ═══════════════════════════════════════════════════════════
+// VIDEO SYNC EVENTS
+// ═══════════════════════════════════════════════════════════
+
+{
+  type: 'play',
+  currentTime: 120.5,
+  playbackRate: 1.0,
+  element: 0,
+  location: '-1'
+}
+→ Apply: video.play(); video.currentTime = 120.5; video.playbackRate = 1.0;
+
+{
+  type: 'pause',
+  currentTime: 155.2,
+  playbackRate: 1.0,
+  element: 0,
+  location: '-1'
+}
+→ Apply: video.pause(); video.currentTime = 155.2;
+
+{
+  type: 'seeked',
+  currentTime: 200.0,
+  playbackRate: 1.0,
+  element: 0,
+  location: '-1'
+}
+→ Apply: video.currentTime = 200.0;
+
+{
+  type: 'ratechange',
+  currentTime: 120.0,
+  playbackRate: 1.5,
+  element: 0,
+  location: '-1'
+}
+→ Apply: video.playbackRate = 1.5;
+```
+
+```javascript
+// ═══════════════════════════════════════════════════════════
+// CHAT EVENTS  ← NEW
+// ═══════════════════════════════════════════════════════════
+
+// Incoming from client
+socket.on('chatMessage', (data) => {
+  // data = { text: "Ready to watch?" }
+  → Validate, build messageObj, store in chatHistory, broadcast to room
+});
+
+// Outgoing to all room members
+io.to(roomName).emit('chatMessage', {
+  id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+  user: socket.userName,
+  text: sanitizedText,
+  timestamp: Date.now(),
+  type: 'user'
+});
+
+// System message helper
+function postSystemMessage(roomName, text) {
+  const msg = {
+    id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    user: null,
+    text,
+    timestamp: Date.now(),
+    type: 'system'
+  };
+  appendToHistory(roomName, msg);
+  io.to(roomName).emit('chatMessage', msg);
+}
+
+// Called on: join, leave, share, AFK kick
+postSystemMessage('movie-night', 'Alice joined the room');
+postSystemMessage('movie-night', 'Bob left the room');
+postSystemMessage('movie-night', 'Alice shared a video: Inception');
+postSystemMessage('movie-night', 'Charlie was disconnected (AFK)');
+```
+
+### Event Validation Rules
+
+```javascript
+// Server-side validation
+function validateSyncEvent(event) {
+  const validTypes = ['play', 'pause', 'seeked', 'ratechange'];
+  
+  if (!event.type || !validTypes.includes(event.type)) return false;
+  if (typeof event.currentTime !== 'number' || event.currentTime < 0) return false;
+  if (typeof event.playbackRate !== 'number' || event.playbackRate <= 0 || event.playbackRate > 16) return false;
+  if (typeof event.element !== 'number' || event.element < 0) return false;
+  if (typeof event.location !== 'string') return false;
+  
+  return true;
+}
+
+// Chat message validation  ← NEW
+function validateChatMessage(text) {
+  if (!text || typeof text !== 'string') return false;
+  if (text.trim().length === 0) return false;
+  if (text.length > 500) return false;   // max 500 chars
+  return true;
+}
+
+// Chat history helper  ← NEW
+const MAX_CHAT_HISTORY = 100;
+
+function appendToHistory(roomName, messageObj) {
+  const room = rooms[roomName];
+  if (!room) return;
+  room.chatHistory.push(messageObj);
+  if (room.chatHistory.length > MAX_CHAT_HISTORY) {
+    room.chatHistory.shift();   // remove oldest
+  }
+}
+```
+
+### Broadcasting Strategy
+
+```javascript
+// ═══════════════════════════════════════════════════════════
+// BROADCAST PATTERNS
+// ═══════════════════════════════════════════════════════════
+
+// 1. Broadcast to ALL users in room (including sender)
+io.to(roomName).emit('usersList', data);
+io.to(roomName).emit('share', videoData);
+io.to(roomName).emit('chatMessage', msgObj);   // ← NEW
+
+// 2. Broadcast to ALL EXCEPT sender
+socket.to(roomName).emit('message', syncEvent);
+
+// 3. Broadcast to specific user
+io.to(socketId).emit('error', 'socket_error_name_length');
+io.to(socketId).emit('chatHistory', { messages: room.chatHistory }); // ← NEW
+
+// 4. Broadcast globally (all connected sockets)
+io.emit('serverMaintenance', { message: 'Restarting in 5 min' });
+```
+
+---
+
+## 💬 CHAT FEATURE ← **NEW SECTION**
+
+### Overview
+
+The Chat feature allows users in the same room to communicate via text messages in real time. Messages are broadcast to all users, and a history of the last 100 messages is stored per room and sent to newly joining users.
+
+### Message Types
+
+| Type | Description | `user` field |
+|------|-------------|-------------|
+| `user` | Normal text message from a user | User's name |
+| `system` | Auto-generated notification | `null` |
+
+### System Message Triggers
+
+| Event | System Message |
+|-------|---------------|
+| User joins | `"<name> joined the room"` |
+| User leaves (normal) | `"<name> left the room"` |
+| User disconnects unexpectedly | `"<name> disconnected"` |
+| User kicked for AFK | `"<name> was disconnected (AFK)"` |
+| Video shared | `"<name> shared a video: <title>"` |
+
+### Server-Side Implementation
+
+```javascript
+// ─────────────────────────────────────────────────
+// In your main Socket.IO handler block:
+// ─────────────────────────────────────────────────
+
+socket.on('join', (data) => {
+  const { name, room } = data;
+
+  // ... existing join logic ...
+
+  // Send chat history to joining user
+  const history = rooms[room]?.chatHistory ?? [];
+  socket.emit('chatHistory', { messages: history });
+
+  // Post system message to room
+  postSystemMessage(room, `${name} joined the room`);
+});
+
+// ─────────────────────────────────────────────────
+// NEW: Handle incoming chat messages
+// ─────────────────────────────────────────────────
+socket.on('chatMessage', (data) => {
+  const roomName = socket.currentRoom;
+  const userName = socket.userName;
+
+  // Must be in a room
+  if (!roomName || !userName) {
+    socket.emit('error', 'socket_error_not_in_room');
+    return;
+  }
+
+  // Rate limit check
+  if (!checkSocketRateLimit(socket.id)) {
+    socket.emit('error', 'socket_error_rate_limit');
+    return;
+  }
+
+  // Validate
+  if (!validateChatMessage(data.text)) {
+    socket.emit('error', 'socket_error_message_invalid');
+    return;
+  }
+
+  // Sanitize
+  const sanitizedText = sanitizeInput(data.text);
+
+  // Build message object
+  const messageObj = {
+    id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    user: userName,
+    text: sanitizedText,
+    timestamp: Date.now(),
+    type: 'user'
+  };
+
+  // Store & broadcast
+  appendToHistory(roomName, messageObj);
+  io.to(roomName).emit('chatMessage', messageObj);
+});
+
+// ─────────────────────────────────────────────────
+// On disconnect — post system message
+// ─────────────────────────────────────────────────
+socket.on('disconnect', () => {
+  const { currentRoom, userName } = socket;
+  if (currentRoom && userName) {
+    postSystemMessage(currentRoom, `${userName} left the room`);
+  }
+  // ... existing disconnect logic ...
+});
+```
+
+### Client-Side Usage (Extension)
+
+```javascript
+// Send a chat message
+socket.emit('chatMessage', { text: "Ready to start the movie!" });
+
+// Receive a chat message (any type)
+socket.on('chatMessage', (msg) => {
+  if (msg.type === 'system') {
+    renderSystemMessage(msg.text, msg.timestamp);
+  } else {
+    renderUserMessage(msg.user, msg.text, msg.timestamp);
+  }
+});
+
+// Receive history on room join
+socket.on('chatHistory', (data) => {
+  data.messages.forEach((msg) => {
+    if (msg.type === 'system') {
+      renderSystemMessage(msg.text, msg.timestamp);
+    } else {
+      renderUserMessage(msg.user, msg.text, msg.timestamp);
+    }
+  });
+});
+
+// Helper renderers
+function renderUserMessage(user, text, timestamp) {
+  const time = new Date(timestamp).toLocaleTimeString();
+  chatContainer.insertAdjacentHTML('beforeend', `
+    <div class="chat-msg">
+      <span class="chat-user">${escapeHtml(user)}</span>
+      <span class="chat-time">${time}</span>
+      <p class="chat-text">${escapeHtml(text)}</p>
+    </div>
+  `);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function renderSystemMessage(text, timestamp) {
+  const time = new Date(timestamp).toLocaleTimeString();
+  chatContainer.insertAdjacentHTML('beforeend', `
+    <div class="chat-system">
+      <span>${escapeHtml(text)}</span>
+      <span class="chat-time">${time}</span>
+    </div>
+  `);
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+```
+
+### Chat Error Keys
+
+| Error Key | Cause |
+|-----------|-------|
+| `socket_error_not_in_room` | Sent chat without joining a room first |
+| `socket_error_message_invalid` | Empty or >500 char message |
+| `socket_error_rate_limit` | Too many messages per second |
+
+---
+
+## 🔒 SECURITY & VALIDATION
+
+### Input Validation
+
+```javascript
+// Name validation
+function validateName(name) {
+  if (!name || typeof name !== 'string') return false;
+  if (name.length < 2 || name.length > 24) return false;
+  if (!/^[a-zA-Z0-9_\s-]+$/.test(name)) return false;
+  return true;
+}
+
+// Room name validation
+function validateRoom(room) {
+  if (!room || typeof room !== 'string') return false;
+  if (room.length < 2 || room.length > 24) return false;
+  if (!/^[a-zA-Z0-9_-]+$/.test(room)) return false;
+  return true;
+}
+
+// URL validation (for shared videos)
+function validateUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return ['http:', 'https:'].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+// Chat message validation  ← NEW
+function validateChatMessage(text) {
+  if (!text || typeof text !== 'string') return false;
+  if (text.trim().length === 0) return false;
+  if (text.length > 500) return false;
+  return true;
+}
+```
+
+### Rate Limiting
+
+```javascript
+const rateLimit = require('express-rate-limit');
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: 'Too many requests from this IP'
+});
+app.use('/api/', apiLimiter);
+
+const socketRateLimiter = {
+  maxEventsPerSecond: 10,
+  violations: new Map()
+};
+
+function checkSocketRateLimit(socketId) {
+  const now = Date.now();
+  const violations = socketRateLimiter.violations;
+  
+  if (!violations.has(socketId)) {
+    violations.set(socketId, { count: 1, timestamp: now });
+    return true;
+  }
+  
+  const record = violations.get(socketId);
+  const elapsed = now - record.timestamp;
+  
+  if (elapsed > 1000) {
+    violations.set(socketId, { count: 1, timestamp: now });
+    return true;
+  }
+  
+  if (record.count >= socketRateLimiter.maxEventsPerSecond) {
+    return false;
+  }
+  
+  record.count++;
+  return true;
+}
+```
+
+### CORS Configuration
+
+```javascript
+const cors = require('cors');
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST'],
+  credentials: false
+}));
+
+const io = socketIo(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+```
+
+### XSS Prevention
+
+```javascript
+const sanitizeHtml = require('sanitize-html');
+
+function sanitizeInput(str) {
+  return sanitizeHtml(str, {
+    allowedTags: [],
+    allowedAttributes: {}
+  }).trim();
+}
+
+// Applied to: name, room, chat messages, video titles
+socket.on('join', (data) => {
+  const name = sanitizeInput(data.name);
+  const room = sanitizeInput(data.room);
+});
+
+socket.on('chatMessage', (data) => {   // ← NEW
+  const text = sanitizeInput(data.text);
+});
+```
+
+---
+
+## 🚀 DEPLOYMENT GUIDE
+
+### Local Development
+
+```bash
+# 1. Clone repo
+git clone https://github.com/your-username/syncwatch-backend.git
+cd syncwatch-backend
+
+# 2. Install dependencies
+npm install
+
+# 3. Create .env file
+cat > .env << EOF
+PORT=3000
+NODE_ENV=development
+CORS_ORIGIN=*
+LOG_LEVEL=debug
+EOF
+
+# 4. Start server
+npm run dev
+
+# Server running at: http://localhost:3000
+```
+
+### Production Deployment
+
+#### Option 1: Heroku
+
+```bash
+heroku login
+heroku create syncwatch-server
+heroku config:set NODE_ENV=production
+git push heroku main
+heroku logs --tail
+heroku open
+```
+
+#### Option 2: Railway
+
+```bash
+# Connect GitHub repo → Railway auto-detects Node.js → deploy on push
+git push origin main
+```
+
+#### Option 3: DigitalOcean / VPS
+
+```bash
+ssh root@your_server_ip
+
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+git clone https://github.com/your-username/syncwatch-backend.git
+cd syncwatch-backend
+npm install --production
+
+npm install -g pm2
+pm2 start server.js --name syncwatch
+pm2 save && pm2 startup
+
+# Nginx + SSL setup (same as before)
+```
+
+#### Option 4: Docker
+
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --production
+COPY . .
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  syncwatch:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+```
+
+### Environment Variables
+
+```bash
+# .env.production
+PORT=3000
+NODE_ENV=production
+
+# CORS
+CORS_ORIGIN=*
+
+# Logging
+LOG_LEVEL=info
+LOG_FILE=/app/logs/server.log
+
+# Socket.IO
+SOCKET_TRANSPORTS=websocket,polling
+SOCKET_PING_TIMEOUT=5000
+SOCKET_PING_INTERVAL=25000
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
+
+# AFK Detection
+AFK_TIMEOUT_MS=300000  # 5 minutes
+
+# Chat                                       ← NEW
+MAX_CHAT_HISTORY=100
+MAX_CHAT_MESSAGE_LENGTH=500
+
+# Database (optional)
+MONGODB_URI=mongodb://localhost:27017/syncwatch
+REDIS_URL=redis://localhost:6379
+```
+
+---
+
+## 🧪 TESTING STRATEGY
+
+### Unit Tests
+
+```javascript
+// test/validation.test.js
+const { validateName, validateRoom, validateChatMessage } = require('../utils/validation');
+
+describe('Input Validation', () => {
+  test('validates correct name', () => {
+    expect(validateName('Alice')).toBe(true);
+    expect(validateName('Bob_123')).toBe(true);
+  });
+  
+  test('rejects invalid name', () => {
+    expect(validateName('A')).toBe(false);
+    expect(validateName('A'.repeat(25))).toBe(false);
+    expect(validateName('<script>alert(1)</script>')).toBe(false);
+  });
+  
+  test('validates correct room name', () => {
+    expect(validateRoom('movie-night')).toBe(true);
+    expect(validateRoom('friends_room')).toBe(true);
+  });
+
+  // ── CHAT ──────────────────────────────────── NEW
+  test('validates chat messages', () => {
+    expect(validateChatMessage('Hello!')).toBe(true);
+    expect(validateChatMessage('')).toBe(false);
+    expect(validateChatMessage('   ')).toBe(false);
+    expect(validateChatMessage('A'.repeat(501))).toBe(false);
+  });
+});
+```
+
+### Integration Tests
+
+```javascript
+// test/socket.test.js
+const io = require('socket.io-client');
+const server = require('../server');
+
+describe('Socket.IO Events', () => {
+  let clientA, clientB;
+  
+  beforeAll((done) => { server.listen(3001, done); });
+  afterAll(() => { server.close(); });
+  
+  beforeEach((done) => {
+    clientA = io('http://localhost:3001');
+    clientB = io('http://localhost:3001');
+    let connected = 0;
+    const checkDone = () => { if (++connected === 2) done(); };
+    clientA.on('connect', checkDone);
+    clientB.on('connect', checkDone);
+  });
+  
+  afterEach(() => {
+    clientA.disconnect();
+    clientB.disconnect();
+  });
+  
+  test('users join same room and see each other', (done) => {
+    clientA.emit('join', { name: 'Alice', room: 'test-room' });
+    clientB.emit('join', { name: 'Bob', room: 'test-room' });
+    
+    clientB.on('usersList', (data) => {
+      expect(data.list).toHaveLength(2);
+      done();
+    });
+  });
+  
+  test('video sync event is broadcast to other users', (done) => {
+    clientA.emit('join', { name: 'Alice', room: 'sync-test' });
+    clientB.emit('join', { name: 'Bob', room: 'sync-test' });
+    
+    clientB.on('message', (event) => {
+      expect(event.type).toBe('play');
+      expect(event.currentTime).toBe(120.5);
+      done();
+    });
+    
+    setTimeout(() => {
+      clientA.send({ type: 'play', currentTime: 120.5, playbackRate: 1.0 });
+    }, 100);
+  });
+
+  // ── CHAT TESTS ────────────────────────────── NEW
+  test('chat message is broadcast to all room users', (done) => {
+    clientA.emit('join', { name: 'Alice', room: 'chat-test' });
+    clientB.emit('join', { name: 'Bob', room: 'chat-test' });
+
+    clientB.on('chatMessage', (msg) => {
+      if (msg.type === 'user') {
+        expect(msg.user).toBe('Alice');
+        expect(msg.text).toBe('Hello!');
+        expect(msg.timestamp).toBeDefined();
+        done();
+      }
+    });
+
+    setTimeout(() => {
+      clientA.emit('chatMessage', { text: 'Hello!' });
+    }, 100);
+  });
+
+  test('joining user receives chat history', (done) => {
+    clientA.emit('join', { name: 'Alice', room: 'history-test' });
+    
+    setTimeout(() => {
+      clientA.emit('chatMessage', { text: 'First message' });
+
+      setTimeout(() => {
+        clientB.emit('join', { name: 'Bob', room: 'history-test' });
+        clientB.on('chatHistory', (data) => {
+          expect(Array.isArray(data.messages)).toBe(true);
+          expect(data.messages.some(m => m.text === 'First message')).toBe(true);
+          done();
+        });
+      }, 100);
+    }, 100);
+  });
+
+  test('system message posted on user join', (done) => {
+    clientA.emit('join', { name: 'Alice', room: 'sys-test' });
+
+    clientA.on('chatMessage', (msg) => {
+      if (msg.type === 'system' && msg.text.includes('Alice')) {
+        expect(msg.user).toBeNull();
+        done();
+      }
+    });
+  });
+
+  test('rejects empty chat message', (done) => {
+    clientA.emit('join', { name: 'Alice', room: 'invalid-test' });
+
+    clientA.on('error', (errKey) => {
+      expect(errKey).toBe('socket_error_message_invalid');
+      done();
+    });
+
+    setTimeout(() => {
+      clientA.emit('chatMessage', { text: '' });
+    }, 100);
+  });
+});
+```
+
+### Load Testing
+
+```javascript
+// test/load.test.js
+const io = require('socket.io-client');
+
+async function loadTest() {
+  const NUM_CLIENTS = 100;
+  const clients = [];
+  
+  for (let i = 0; i < NUM_CLIENTS; i++) {
+    const client = io('http://localhost:3000');
+    client.on('connect', () => {
+      client.emit('join', { name: `User${i}`, room: 'load-test' });
+    });
+    clients.push(client);
+  }
+  
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  
+  // Simulate video + chat events
+  setInterval(() => {
+    const c = clients[Math.floor(Math.random() * clients.length)];
+    c.send({ type: 'play', currentTime: Math.random() * 3600, playbackRate: 1.0 });
+  }, 100);
+
+  // Simulate chat messages  ← NEW
+  setInterval(() => {
+    const c = clients[Math.floor(Math.random() * clients.length)];
+    c.emit('chatMessage', { text: `Test message ${Date.now()}` });
+  }, 500);
+}
+
+loadTest();
+```
+
+---
+
+## 📊 MONITORING & LOGGING
+
+### Winston Logger Setup
+
+```javascript
+const winston = require('winston');
+
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' })
+  ]
+});
+
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }));
+}
+
+module.exports = logger;
+```
+
+### Health Monitoring
+
+```javascript
+app.get('/health', (req, res) => {
+  const health = {
+    status: 'online',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    activeRooms: Object.keys(rooms).length,
+    totalUsers: Object.values(rooms).reduce((sum, r) => sum + r.users.length, 0),
+    totalChatMessages: Object.values(rooms).reduce((sum, r) => sum + r.chatHistory.length, 0),  // ← NEW
+    cpu: process.cpuUsage()
+  };
+  
+  res.json(health);
+});
+```
+
+---
+
+## 🎯 IMPLEMENTATION CHECKLIST
+
+### Phase 1: Core Backend (Week 1)
+- [ ] Express server setup
+- [ ] Socket.IO integration
+- [ ] Room management (in-memory)
+- [ ] User join/leave events
+- [ ] Video sync broadcasting
+- [ ] Basic validation
+- [ ] CORS configuration
+- [ ] Health check endpoint
+
+### Phase 2: Features (Week 2)
+- [ ] Video sharing
+- [ ] **Chat message broadcasting** ← **NEW**
+- [ ] **Chat history (last 100 msgs per room)** ← **NEW**
+- [ ] **System messages (join/leave/share/AFK)** ← **NEW**
+- [ ] **Chat REST endpoint (`GET /room/:name/chat`)** ← **NEW**
+- [ ] AFK detection
+- [ ] Rate limiting (including chat events)
+- [ ] Error handling
+- [ ] Logging (Winston)
+- [ ] Input sanitization
+- [ ] Stats endpoint
+
+### Phase 3: Production (Week 3)
+- [ ] Environment configuration
+- [ ] Docker setup
+- [ ] PM2 integration
+- [ ] Nginx reverse proxy
+- [ ] SSL/HTTPS
+- [ ] Load testing (video + chat)
+- [ ] Monitoring dashboard
+- [ ] Documentation
+
+### Phase 4: Optional Enhancements
+- [ ] MongoDB/Redis persistence (including chat)
+- [ ] Admin panel
+- [ ] Analytics
+- [ ] Emoji reactions in chat
+- [ ] Private rooms with passwords
+- [ ] WebRTC for low-latency sync
+
+---
+
+## 📚 ADDITIONAL RESOURCES
+
+- **Socket.IO Docs**: https://socket.io/docs/v4/
+- **Express.js Guide**: https://expressjs.com/
+- **PM2 Process Manager**: https://pm2.keymetrics.io/
+- **Winston Logger**: https://github.com/winstonjs/winston
+- **Docker Guide**: https://docs.docker.com/
+
+---
+
+## 🤝 CONTRIBUTION GUIDE
+
+When contributing to the backend:
+
+1. Follow the event naming conventions
+2. Add tests for new features (including chat)
+3. Update this GRAPHIFY.md
+4. Maintain backward compatibility
+5. Document breaking changes
+
+---
+
+**END OF GRAPHIFY.md**
+
+*Last Updated: 2026-04-30*
+*Version: 2.1.0 — Chat Feature Added*
