@@ -6,7 +6,7 @@
 // document as long as we periodically write to IndexedDB.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BACKEND_WS = 'wss://syncwatch-64jv.onrender.com';
+const BACKEND_WS = 'wss://syncwatch-ad6y.onrender.com';
 
 // One socket per "tabId" key — we use 'GLOBAL' as the single key
 const sockets = {};

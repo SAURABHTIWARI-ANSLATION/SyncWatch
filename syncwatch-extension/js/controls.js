@@ -4,7 +4,7 @@
 // SyncWatch — Controls Overlay (inside iframe, communicates via postMessage)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BACKEND = 'https://syncwatch-64jv.onrender.com';
+const BACKEND = 'https://syncwatch-ad6y.onrender.com';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@
 // SyncWatch — Popup Controller
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BACKEND = 'https://syncwatch-64jv.onrender.com';
+const BACKEND = 'https://syncwatch-ad6y.onrender.com';
 
 // ── Persistent user identity ──────────────────────────────────────────────────
 

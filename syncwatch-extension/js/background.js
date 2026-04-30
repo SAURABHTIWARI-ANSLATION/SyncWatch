@@ -5,7 +5,7 @@
 // Single responsibility: bridge between offscreen WebSocket and content/popup.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BACKEND_HTTP = 'https://syncwatch-64jv.onrender.com';
+const BACKEND_HTTP = 'https://syncwatch-ad6y.onrender.com';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Session state — single room per browser profile
